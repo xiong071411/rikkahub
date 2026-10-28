@@ -85,6 +85,30 @@ jobs:
           echo "keyAlias=rikkahub" >> local.properties
           echo "keyPassword=123456" >> local.properties
 
+      - name: Build 32-bit libsimple.so (armeabi-v7a)
+        run: |
+          if [ -n "$ANDROID_NDK_LATEST_HOME" ]; then
+            NDK_PATH="$ANDROID_NDK_LATEST_HOME"
+          elif [ -n "$ANDROID_NDK_HOME" ]; then
+            NDK_PATH="$ANDROID_NDK_HOME"
+          else
+            NDK_PATH=$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          fi
+          echo "Using NDK: $NDK_PATH"
+
+          git clone --depth 1 --branch v0.7.1 https://github.com/wangfenjin/simple.git /tmp/simple-src
+          cmake -S /tmp/simple-src -B /tmp/simple-build-armeabi-v7a \
+            -DCMAKE_TOOLCHAIN_FILE="${NDK_PATH}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="armeabi-v7a" \
+            -DANDROID_PLATFORM=android-21 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TEST_EXAMPLE=OFF \
+            -DBUILD_SHELL=OFF
+          cmake --build /tmp/simple-build-armeabi-v7a --config Release --target simple --parallel
+          mkdir -p app/src/main/jniLibs/armeabi-v7a
+          find /tmp/simple-build-armeabi-v7a -name "libsimple.so" -exec cp {} app/src/main/jniLibs/armeabi-v7a/ \;
+          ls -la app/src/main/jniLibs/armeabi-v7a/libsimple.so
+
       - name: Build with Gradle
         run: |
           chmod +x gradlew
