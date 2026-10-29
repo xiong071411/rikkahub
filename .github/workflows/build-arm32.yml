@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - arm32
+      - arm32-scale50
       - main
   workflow_dispatch:
 
@@ -126,14 +127,13 @@ jobs:
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
-        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/arm32'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/arm32' || github.ref == 'refs/heads/arm32-scale50'
         continue-on-error: true
         with:
-          tag_name: 3.1.1-arm32
-          name: "RikkaHub 3.1.1 (32-bit & 64-bit)"
+          tag_name: ${{ github.ref == 'refs/heads/arm32-scale50' && '3.1.1-watch50' || '3.1.1-arm32' }}
+          name: ${{ github.ref == 'refs/heads/arm32-scale50' && 'RikkaHub 3.1.1 (Watch 50% Scale Edition)' || 'RikkaHub 3.1.1 (32-bit & 64-bit)' }}
           prerelease: false
           body: |
             RikkaHub 3.1.1 32位（armeabi-v7a）与多架构构建版本。
-            包含专门适配 32 位设备及智能手表的 armeabi-v7a APK。
           files: |
             app/build/outputs/apk/github/release/*.apk

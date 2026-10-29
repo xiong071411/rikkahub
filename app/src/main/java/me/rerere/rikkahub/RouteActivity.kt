@@ -3,6 +3,7 @@ package me.rerere.rikkahub
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
@@ -32,8 +33,11 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.res.stringResource
@@ -167,6 +171,28 @@ class RouteActivity : ComponentActivity() {
     // Volume key listener registry — last registered handler wins
     internal val volumeKeyListeners = mutableListOf<(isVolumeUp: Boolean) -> Boolean>()
 
+    companion object {
+        // 专为智能手表高密屏幕定制的 50% 缩放比例
+        private const val WATCH_SCALE_FACTOR = 0.5f
+    }
+
+    override fun attachBaseContext(newBase: Context) {
+        val origDpi = newBase.resources.configuration.densityDpi
+        val targetDpi = (origDpi * WATCH_SCALE_FACTOR).toInt().coerceAtLeast(120)
+        val config = Configuration(newBase.resources.configuration).apply {
+            densityDpi = targetDpi
+        }
+        val context = newBase.createConfigurationContext(config)
+        super.attachBaseContext(context)
+    }
+
+    override fun applyOverrideConfiguration(overrideConfiguration: Configuration?) {
+        overrideConfiguration?.let {
+            it.densityDpi = (it.densityDpi * WATCH_SCALE_FACTOR).toInt().coerceAtLeast(120)
+        }
+        super.applyOverrideConfiguration(overrideConfiguration)
+    }
+
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
@@ -193,27 +219,43 @@ class RouteActivity : ComponentActivity() {
             handleIntent(intent)
         }
         setContent {
-            RikkahubTheme {
-                setSingletonImageLoaderFactory { context ->
-                    ImageLoader.Builder(context)
-                        .crossfade(true)
-                        .components {
-                            add(
-                                OkHttpNetworkFetcherFactory(
-                                    callFactory = { okHttpClient },
-                                    cacheStrategy = { CacheControlCacheStrategy() },
-                                )
-                            )
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                                add(AnimatedImageDecoder.Factory())
-                            } else {
-                                add(GifDecoder.Factory())
-                            }
-                            add(SvgDecoder.Factory(scaleToDensity = true))
-                        }
-                        .build()
+            val currentDensity = LocalDensity.current
+            // 确保如果手表系统 ROM 覆盖重置了 BaseContext 的 DPI，Compose 也能无缝以 50% 缩放呈现
+            val effectiveDensity = remember(currentDensity) {
+                val targetDpi = (resources.configuration.densityDpi).coerceAtLeast(120)
+                val expectedDensity = targetDpi / 160f
+                if (kotlin.math.abs(currentDensity.density - expectedDensity) < 0.15f) {
+                    currentDensity
+                } else {
+                    Density(
+                        density = currentDensity.density * WATCH_SCALE_FACTOR,
+                        fontScale = currentDensity.fontScale
+                    )
                 }
-                AppRoutes()
+            }
+            CompositionLocalProvider(LocalDensity provides effectiveDensity) {
+                RikkahubTheme {
+                    setSingletonImageLoaderFactory { context ->
+                        ImageLoader.Builder(context)
+                            .crossfade(true)
+                            .components {
+                                add(
+                                    OkHttpNetworkFetcherFactory(
+                                        callFactory = { okHttpClient },
+                                        cacheStrategy = { CacheControlCacheStrategy() },
+                                    )
+                                )
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                    add(AnimatedImageDecoder.Factory())
+                                } else {
+                                    add(GifDecoder.Factory())
+                                }
+                                add(SvgDecoder.Factory(scaleToDensity = true))
+                            }
+                            .build()
+                    }
+                    AppRoutes()
+                }
             }
         }
     }
