@@ -83,121 +83,125 @@ fun SyncTab(
     ) {
         // 说明卡片
         CardGroup {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "⚡ 自建轻量增量同步 (Sync Server)",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = stringResource(R.string.backup_page_sync_server_desc),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            formItem {
+                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                    Text(
+                        text = "⚡ 自建轻量增量同步 (Sync Server)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = stringResource(R.string.backup_page_sync_server_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
 
         // 同步操作卡片
         CardGroup {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp)
-            ) {
-                Text(
-                    text = "同步状态与操作",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(modifier = Modifier.height(8.dp))
+            formItem {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "同步状态与操作",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
 
-                val lastSyncStr = if (syncConfig.lastSyncTime > 0) {
-                    val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-                    sdf.format(Date(syncConfig.lastSyncTime))
-                } else {
-                    stringResource(R.string.backup_page_sync_server_never)
-                }
+                    val lastSyncStr = if (syncConfig.lastSyncTime > 0) {
+                        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+                        sdf.format(Date(syncConfig.lastSyncTime))
+                    } else {
+                        stringResource(R.string.backup_page_sync_server_never)
+                    }
 
-                Text(
-                    text = stringResource(R.string.backup_page_sync_server_last_time, lastSyncStr),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                    Text(
+                        text = stringResource(R.string.backup_page_sync_server_last_time, lastSyncStr),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
 
-                AnimatedVisibility(visible = isSyncing) {
-                    Column(modifier = Modifier.padding(top = 8.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                            Text(
-                                text = syncStatusMessage.ifEmpty { stringResource(R.string.backup_page_sync_server_syncing) },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                    AnimatedVisibility(visible = isSyncing) {
+                        Column(modifier = Modifier.padding(top = 8.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Text(
+                                    text = syncStatusMessage.ifEmpty { stringResource(R.string.backup_page_sync_server_syncing) },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                try {
-                                    val summary = vm.startIncrementalSync()
-                                    toaster.show(
-                                        "增量同步成功！拉取 ${summary.pulledConversations} 条，推送 ${summary.pushedConversations} 条",
-                                        type = ToastType.Success
-                                    )
-                                } catch (e: Exception) {
-                                    e.printStackTrace()
-                                    toaster.show(e.message ?: "同步失败", type = ToastType.Error)
-                                }
-                            }
-                        },
-                        enabled = !isSyncing && !isTesting,
-                        modifier = Modifier.weight(1f)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(HugeIcons.Refresh01, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.size(6.dp))
-                        Text(stringResource(R.string.backup_page_sync_server_sync_now))
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                isTesting = true
-                                try {
-                                    vm.testSyncServer()
-                                    toaster.show(
-                                        context.getString(R.string.backup_page_connection_success),
-                                        type = ToastType.Success
-                                    )
-                                } catch (e: Exception) {
-                                    e.printStackTrace()
-                                    toaster.show(
-                                        context.getString(R.string.backup_page_connection_failed, e.message ?: ""),
-                                        type = ToastType.Error
-                                    )
-                                } finally {
-                                    isTesting = false
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    try {
+                                        val summary = vm.startIncrementalSync()
+                                        toaster.show(
+                                            "增量同步成功！拉取 ${summary.pulledConversations} 条，推送 ${summary.pushedConversations} 条",
+                                            type = ToastType.Success
+                                        )
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                        toaster.show(e.message ?: "同步失败", type = ToastType.Error)
+                                    }
                                 }
+                            },
+                            enabled = !isSyncing && !isTesting,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(HugeIcons.Refresh01, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.size(6.dp))
+                            Text(stringResource(R.string.backup_page_sync_server_sync_now))
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    isTesting = true
+                                    try {
+                                        vm.testSyncServer()
+                                        toaster.show(
+                                            context.getString(R.string.backup_page_connection_success),
+                                            type = ToastType.Success
+                                        )
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                        toaster.show(
+                                            context.getString(R.string.backup_page_connection_failed, e.message ?: ""),
+                                            type = ToastType.Error
+                                        )
+                                    } finally {
+                                        isTesting = false
+                                    }
+                                }
+                            },
+                            enabled = !isSyncing && !isTesting
+                        ) {
+                            if (isTesting) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            } else {
+                                Text(stringResource(R.string.backup_page_sync_server_test))
                             }
-                        },
-                        enabled = !isSyncing && !isTesting
-                    ) {
-                        if (isTesting) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        } else {
-                            Text(stringResource(R.string.backup_page_sync_server_test))
                         }
                     }
                 }
@@ -206,64 +210,66 @@ fun SyncTab(
 
         // 服务器配置卡片
         CardGroup {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "服务器连接参数",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
+            formItem {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "服务器连接参数",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
 
-                OutlinedTextField(
-                    value = syncConfig.serverUrl,
-                    onValueChange = { updateConfig { cfg -> cfg.copy(serverUrl = it) } },
-                    label = { Text(stringResource(R.string.backup_page_sync_server_url)) },
-                    placeholder = { Text("http://45.207.200.189:8765") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                    OutlinedTextField(
+                        value = syncConfig.serverUrl,
+                        onValueChange = { updateConfig { cfg -> cfg.copy(serverUrl = it) } },
+                        label = { Text(stringResource(R.string.backup_page_sync_server_url)) },
+                        placeholder = { Text("http://45.207.200.189:8765") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
 
-                OutlinedTextField(
-                    value = syncConfig.authToken,
-                    onValueChange = { updateConfig { cfg -> cfg.copy(authToken = it) } },
-                    label = { Text(stringResource(R.string.backup_page_sync_server_token)) },
-                    singleLine = true,
-                    visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        IconButton(onClick = { showToken = !showToken }) {
-                            Icon(
-                                imageVector = if (showToken) HugeIcons.View else HugeIcons.ViewOff,
-                                contentDescription = null
+                    OutlinedTextField(
+                        value = syncConfig.authToken,
+                        onValueChange = { updateConfig { cfg -> cfg.copy(authToken = it) } },
+                        label = { Text(stringResource(R.string.backup_page_sync_server_token)) },
+                        singleLine = true,
+                        visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { showToken = !showToken }) {
+                                Icon(
+                                    imageVector = if (showToken) HugeIcons.View else HugeIcons.ViewOff,
+                                    contentDescription = null
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.backup_page_sync_server_sync_files),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Text(
+                                text = "仅上传与下载本地/远端缺失的附件，避免重复耗流",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = stringResource(R.string.backup_page_sync_server_sync_files),
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        Text(
-                            text = "仅上传与下载本地/远端缺失的附件，避免重复耗流",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        Switch(
+                            checked = syncConfig.syncFiles,
+                            onCheckedChange = { updateConfig { cfg -> cfg.copy(syncFiles = it) } }
                         )
                     }
-                    Switch(
-                        checked = syncConfig.syncFiles,
-                        onCheckedChange = { updateConfig { cfg -> cfg.copy(syncFiles = it) } }
-                    )
                 }
             }
         }
