@@ -36,6 +36,7 @@ android {
         }
 
         manifestPlaceholders["deepLinkScheme"] = "rikkahub"
+        buildConfigField("float", "SCALE_FACTOR", "0.5f")
     }
 
     splits {
@@ -112,17 +113,28 @@ android {
             dimension = "distribution"
             isDefault = true
             buildConfigField("boolean", "IS_PLAY_STORE", "false")
+            buildConfigField("float", "SCALE_FACTOR", "0.5f")
         }
-        // 共存版：使用独立的 applicationId (me.rerere.rikkahub.coexist)，可与官方版本在同一台设备/手表上同时安装运行
+        // 共存版 (50% 手表微缩版)：适合手表高密微型屏幕，防挤压
         create("coexist") {
             dimension = "distribution"
             applicationId = "me.rerere.rikkahub.coexist"
             manifestPlaceholders["deepLinkScheme"] = "rikkahub-coexist"
             buildConfigField("boolean", "IS_PLAY_STORE", "false")
+            buildConfigField("float", "SCALE_FACTOR", "0.5f")
+        }
+        // 共存版 (100% 正常原比例版)：标准手机显示比例，与官方版和50%共存版均可同时安装
+        create("coexistNormal") {
+            dimension = "distribution"
+            applicationId = "me.rerere.rikkahub.coexist.normal"
+            manifestPlaceholders["deepLinkScheme"] = "rikkahub-coexist-normal"
+            buildConfigField("boolean", "IS_PLAY_STORE", "false")
+            buildConfigField("float", "SCALE_FACTOR", "1.0f")
         }
         create("play") {
             dimension = "distribution"
             buildConfigField("boolean", "IS_PLAY_STORE", "true")
+            buildConfigField("float", "SCALE_FACTOR", "1.0f")
         }
     }
     compileOptions {

@@ -91,6 +91,25 @@ jobs:
                       "other_platform_oauth_client": []
                     }
                   }
+                },
+                {
+                  "client_info": {
+                    "mobilesdk_app_id": "1:103948572019:android:abcdef012345678b",
+                    "android_client_info": {
+                      "package_name": "me.rerere.rikkahub.coexist.normal"
+                    }
+                  },
+                  "oauth_client": [],
+                  "api_key": [
+                    {
+                      "current_key": "AIzaSyA0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q"
+                    }
+                  ],
+                  "services": {
+                    "appinvite_service": {
+                      "other_platform_oauth_client": []
+                    }
+                  }
                 }
               ],
               "configuration_version": "1"
@@ -133,14 +152,16 @@ jobs:
       - name: Build with Gradle
         run: |
           chmod +x gradlew
-          ./gradlew assembleGithubRelease assembleCoexistRelease --stacktrace
+          ./gradlew assembleGithubRelease assembleCoexistRelease assembleCoexistNormalRelease --stacktrace
 
       - name: List APK outputs
         run: |
           echo "=== Official Release APKs ==="
           ls -la app/build/outputs/apk/github/release/ || true
-          echo "=== Coexist Release APKs ==="
+          echo "=== Coexist (Watch 50%) Release APKs ==="
           ls -la app/build/outputs/apk/coexist/release/ || true
+          echo "=== CoexistNormal (100% Scale) Release APKs ==="
+          ls -la app/build/outputs/apk/coexistNormal/release/ || true
 
       - name: Upload APKs artifact
         uses: actions/upload-artifact@v4
@@ -149,6 +170,7 @@ jobs:
           path: |
             app/build/outputs/apk/github/release/*.apk
             app/build/outputs/apk/coexist/release/*.apk
+            app/build/outputs/apk/coexistNormal/release/*.apk
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -159,7 +181,8 @@ jobs:
           name: ${{ (github.ref == 'refs/heads/personal-main' || github.ref == 'refs/heads/arm32-scale50') && 'RikkaHub 3.1.1 (Watch 50% Scale Edition)' || 'RikkaHub 3.1.1 (32-bit & 64-bit)' }}
           prerelease: false
           body: |
-            RikkaHub 3.1.1 32位（armeabi-v7a）与多架构构建版本（包含官方版与共存测试版）。
+            RikkaHub 3.1.1 32位（armeabi-v7a）与多架构构建版本（包含官方版、手表50%共存版与正常原比例共存版）。
           files: |
             app/build/outputs/apk/github/release/*.apk
             app/build/outputs/apk/coexist/release/*.apk
+            app/build/outputs/apk/coexistNormal/release/*.apk

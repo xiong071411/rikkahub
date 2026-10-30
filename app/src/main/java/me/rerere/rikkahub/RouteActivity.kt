@@ -172,23 +172,29 @@ class RouteActivity : ComponentActivity() {
     internal val volumeKeyListeners = mutableListOf<(isVolumeUp: Boolean) -> Boolean>()
 
     companion object {
-        // 专为智能手表高密屏幕定制的 50% 缩放比例
-        private const val WATCH_SCALE_FACTOR = 0.5f
+        // 界面缩放比例：根据构建变体配置（手表版为 0.5f，正常手机/标准原比例版为 1.0f）
+        private val SCALE_FACTOR = BuildConfig.SCALE_FACTOR
     }
 
     override fun attachBaseContext(newBase: Context) {
-        val origDpi = newBase.resources.configuration.densityDpi
-        val targetDpi = (origDpi * WATCH_SCALE_FACTOR).toInt().coerceAtLeast(120)
-        val config = Configuration(newBase.resources.configuration).apply {
-            densityDpi = targetDpi
+        if (SCALE_FACTOR < 0.99f) {
+            val origDpi = newBase.resources.configuration.densityDpi
+            val targetDpi = (origDpi * SCALE_FACTOR).toInt().coerceAtLeast(120)
+            val config = Configuration(newBase.resources.configuration).apply {
+                densityDpi = targetDpi
+            }
+            val context = newBase.createConfigurationContext(config)
+            super.attachBaseContext(context)
+        } else {
+            super.attachBaseContext(newBase)
         }
-        val context = newBase.createConfigurationContext(config)
-        super.attachBaseContext(context)
     }
 
     override fun applyOverrideConfiguration(overrideConfiguration: Configuration?) {
-        overrideConfiguration?.let {
-            it.densityDpi = (it.densityDpi * WATCH_SCALE_FACTOR).toInt().coerceAtLeast(120)
+        if (SCALE_FACTOR < 0.99f) {
+            overrideConfiguration?.let {
+                it.densityDpi = (it.densityDpi * SCALE_FACTOR).toInt().coerceAtLeast(120)
+            }
         }
         super.applyOverrideConfiguration(overrideConfiguration)
     }
@@ -220,17 +226,21 @@ class RouteActivity : ComponentActivity() {
         }
         setContent {
             val currentDensity = LocalDensity.current
-            // 确保如果手表系统 ROM 覆盖重置了 BaseContext 的 DPI，Compose 也能无缝以 50% 缩放呈现
+            // 确保如果手表系统 ROM 覆盖重置了 BaseContext 的 DPI，Compose 也能无缝以指定缩放呈现
             val effectiveDensity = remember(currentDensity) {
-                val targetDpi = (resources.configuration.densityDpi).coerceAtLeast(120)
-                val expectedDensity = targetDpi / 160f
-                if (kotlin.math.abs(currentDensity.density - expectedDensity) < 0.15f) {
-                    currentDensity
+                if (SCALE_FACTOR < 0.99f) {
+                    val targetDpi = (resources.configuration.densityDpi).coerceAtLeast(120)
+                    val expectedDensity = targetDpi / 160f
+                    if (kotlin.math.abs(currentDensity.density - expectedDensity) < 0.15f) {
+                        currentDensity
+                    } else {
+                        Density(
+                            density = currentDensity.density * SCALE_FACTOR,
+                            fontScale = currentDensity.fontScale
+                        )
+                    }
                 } else {
-                    Density(
-                        density = currentDensity.density * WATCH_SCALE_FACTOR,
-                        fontScale = currentDensity.fontScale
-                    )
+                    currentDensity
                 }
             }
             CompositionLocalProvider(LocalDensity provides effectiveDensity) {
