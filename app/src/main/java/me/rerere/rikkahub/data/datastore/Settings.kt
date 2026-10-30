@@ -82,6 +82,7 @@ data class Settings(
     val webServerAccessPassword: String = "",
     val webServerLocalhostOnly: Boolean = false,
     val backupReminderConfig: BackupReminderConfig = BackupReminderConfig(),
+    val syncServerConfig: SyncServerConfig = SyncServerConfig(),
     val sponsorAlertDismissedAt: Int = 0,
 ) {
     companion object {
@@ -200,4 +201,13 @@ data class BackupReminderConfig(
     val enabled: Boolean = false,
     val intervalDays: Int = 7,
     val lastBackupTime: Long = 0L,
+)
+
+@Serializable
+data class SyncServerConfig(
+    val serverUrl: String = "http://45.207.200.189:8765",
+    val authToken: String = "rikkahub-sync-secret-2026",
+    val syncFiles: Boolean = true,
+    val lastSyncTime: Long = 0L,
+    val deviceName: String = "",
 )

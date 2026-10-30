@@ -214,6 +214,17 @@
   <string name="backup_page_webdav_backup">WebDAV备份</string>
   <string name="backup_page_webdav_backup_files">WebDav备份文件列表</string>
   <string name="backup_page_webdav_server_address">WebDAV 服务器地址</string>
+  <string name="backup_page_sync_server">增量同步</string>
+  <string name="backup_page_sync_server_url">同步服务器地址</string>
+  <string name="backup_page_sync_server_token">鉴权 Token</string>
+  <string name="backup_page_sync_server_sync_files">同步图片等媒体附件</string>
+  <string name="backup_page_sync_server_test">测试连通性</string>
+  <string name="backup_page_sync_server_sync_now">立即增量同步</string>
+  <string name="backup_page_sync_server_syncing">正在增量同步...</string>
+  <string name="backup_page_sync_server_success">增量同步完成</string>
+  <string name="backup_page_sync_server_last_time">上次成功同步: %s</string>
+  <string name="backup_page_sync_server_never">从未同步</string>
+  <string name="backup_page_sync_server_desc">面向智能手表的秒级双向增量同步，仅传输变动数据，零覆盖破坏。</string>
   <string name="built_in_search_description">是否启用模型内置的搜索功能</string>
   <string name="built_in_search_title">模型内置搜索</string>
   <string name="calculating">计算中...</string>

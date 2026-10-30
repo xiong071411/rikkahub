@@ -33,6 +33,7 @@ internal object AppDatabaseFactory {
                     // 旧版本搜索用 jieba 分词，会把词典解压到这里（约 14MB），现在不再需要
                     File(context.filesDir, "simple_dict").takeIf { it.exists() }?.deleteRecursively()
                     createMessageFtsTables(db)
+                    me.rerere.rikkahub.data.sync.engine.SyncTombstoneManager.createTables(db)
                 }
             })
             .openHelperFactory(SQLiteConfiguration.openHelperFactory(context))

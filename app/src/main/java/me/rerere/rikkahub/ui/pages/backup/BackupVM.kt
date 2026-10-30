@@ -33,12 +33,16 @@ class BackupVM(
     private val s3Sync: S3Sync,
     private val conversationRepository: ConversationRepository,
     private val filesManager: FilesManager,
+    private val incrementalSyncEngine: me.rerere.rikkahub.data.sync.engine.IncrementalSyncEngine,
 ) : ViewModel() {
     val settings = settingsStore.settingsFlow.stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
         initialValue = Settings.dummy()
     )
+
+    val isSyncing = MutableStateFlow(false)
+    val syncStatusMessage = MutableStateFlow("")
 
     val webDavBackupItems = MutableStateFlow<UiState<List<WebDavBackupItem>>>(UiState.Idle)
     val s3BackupItems = MutableStateFlow<UiState<List<S3BackupItem>>>(UiState.Idle)
@@ -73,6 +77,22 @@ class BackupVM(
             }.onFailure {
                 webDavBackupItems.emit(UiState.Error(it))
             }
+        }
+    }
+
+    suspend fun testSyncServer() {
+        incrementalSyncEngine.testConnection(settings.value.syncServerConfig).getOrThrow()
+    }
+
+    suspend fun startIncrementalSync(): me.rerere.rikkahub.data.sync.engine.SyncSummary {
+        isSyncing.value = true
+        syncStatusMessage.value = "准备同步..."
+        return try {
+            incrementalSyncEngine.sync(settings.value.syncServerConfig) { msg ->
+                syncStatusMessage.value = msg
+            }.getOrThrow()
+        } finally {
+            isSyncing.value = false
         }
     }
 

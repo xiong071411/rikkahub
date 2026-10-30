@@ -214,6 +214,17 @@
   <string name="backup_page_webdav_backup">WebDAV Backup</string>
   <string name="backup_page_webdav_backup_files">WebDAV Backup Files</string>
   <string name="backup_page_webdav_server_address">WebDAV Server Address</string>
+  <string name="backup_page_sync_server">Sync Server</string>
+  <string name="backup_page_sync_server_url">Sync Server URL</string>
+  <string name="backup_page_sync_server_token">Auth Token</string>
+  <string name="backup_page_sync_server_sync_files">Sync Media Attachments</string>
+  <string name="backup_page_sync_server_test">Test Connection</string>
+  <string name="backup_page_sync_server_sync_now">Sync Now</string>
+  <string name="backup_page_sync_server_syncing">Syncing...</string>
+  <string name="backup_page_sync_server_success">Sync Successful</string>
+  <string name="backup_page_sync_server_last_time">Last synced: %s</string>
+  <string name="backup_page_sync_server_never">Never</string>
+  <string name="backup_page_sync_server_desc">Lightweight delta sync designed for smartwatches and multi-device collaboration.</string>
   <string name="built_in_search_description">Enable model\'s built-in search functionality</string>
   <string name="built_in_search_title">Built-in Search</string>
   <string name="calculating">Calculating...</string>

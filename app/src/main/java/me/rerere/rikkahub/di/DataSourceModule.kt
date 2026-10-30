@@ -287,6 +287,24 @@ val dataSourceModule = module {
     }
 
     single {
+        me.rerere.rikkahub.data.sync.engine.SyncTombstoneManager(get())
+    }
+
+    single {
+        me.rerere.rikkahub.data.sync.engine.IncrementalSyncEngine(
+            context = get(),
+            settingsStore = get(),
+            conversationRepository = get(),
+            folderRepository = get(),
+            conversationDAO = get(),
+            folderDAO = get(),
+            messageNodeDAO = get(),
+            syncTombstoneManager = get(),
+            okHttpClient = get(),
+        )
+    }
+
+    single {
         S3Sync(
             backupManager = get(),
             context = get(),

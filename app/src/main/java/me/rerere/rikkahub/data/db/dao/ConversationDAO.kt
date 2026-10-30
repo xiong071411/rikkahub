@@ -85,6 +85,9 @@ interface ConversationDAO {
     @Query("SELECT EXISTS(SELECT 1 FROM conversationentity WHERE id = :id)")
     suspend fun existsById(id: String): Boolean
 
+    @Query("SELECT * FROM conversationentity WHERE update_at > :sinceTimestamp ORDER BY update_at ASC")
+    suspend fun getConversationsUpdatedSince(sinceTimestamp: Long): List<ConversationEntity>
+
     @Insert
     suspend fun insert(conversation: ConversationEntity)
 

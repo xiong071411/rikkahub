@@ -35,6 +35,7 @@ class ConversationRepository(
     private val database: AppDatabase,
     private val filesManager: FilesManager,
     private val messageFtsManager: MessageFtsManager,
+    private val syncTombstoneManager: me.rerere.rikkahub.data.sync.engine.SyncTombstoneManager,
 ) {
     companion object {
         private const val PAGE_SIZE = 20
@@ -321,6 +322,7 @@ class ConversationRepository(
                 conversationToConversationEntity(conversation)
             )
             saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
+            syncTombstoneManager.removeTombstone(conversation.id.toString())
         }
         messageFtsManager.indexConversation(conversation)
     }
@@ -350,6 +352,7 @@ class ConversationRepository(
             conversationDAO.delete(
                 conversationToConversationEntity(conversation)
             )
+            syncTombstoneManager.recordTombstone(conversation.id.toString(), "conversation")
         }
         filesManager.deleteChatFiles(fullConversation.files)
     }

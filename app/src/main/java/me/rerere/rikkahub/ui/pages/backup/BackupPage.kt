@@ -36,6 +36,7 @@ import me.rerere.rikkahub.ui.pages.backup.components.BackupDialog
 import me.rerere.rikkahub.ui.pages.backup.tabs.ImportExportTab
 import me.rerere.rikkahub.ui.pages.backup.tabs.ReminderTab
 import me.rerere.rikkahub.ui.pages.backup.tabs.S3Tab
+import me.rerere.rikkahub.ui.pages.backup.tabs.SyncTab
 import me.rerere.rikkahub.ui.pages.backup.tabs.WebDavTab
 import me.rerere.rikkahub.ui.theme.CustomColors
 import org.koin.androidx.compose.koinViewModel
@@ -44,6 +45,7 @@ private enum class BackupTab(
     override val icon: ImageVector,
     @param:StringRes private val labelRes: Int,
 ) : PagerTab {
+    SYNC(HugeIcons.Refresh01, R.string.backup_page_sync_server),
     LOCAL(HugeIcons.SmartPhone01, R.string.backup_page_import_export),
     WEBDAV(HugeIcons.CloudServer, R.string.backup_page_webdav_backup),
     S3(HugeIcons.Bucket, R.string.backup_page_s3_backup),
@@ -95,6 +97,10 @@ fun BackupPage(vm: BackupVM = koinViewModel()) {
                     .weight(1f)
             ) { page ->
                 when (BackupTab.entries[page]) {
+                    BackupTab.SYNC -> {
+                        SyncTab(vm = vm)
+                    }
+
                     BackupTab.LOCAL -> {
                         ImportExportTab(
                             vm = vm,

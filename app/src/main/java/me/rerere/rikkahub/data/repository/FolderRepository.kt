@@ -12,6 +12,7 @@ import kotlin.uuid.Uuid
 class FolderRepository(
     private val folderDAO: FolderDAO,
     private val conversationDAO: ConversationDAO,
+    private val syncTombstoneManager: me.rerere.rikkahub.data.sync.engine.SyncTombstoneManager,
 ) {
     fun getFoldersOfAssistant(assistantId: Uuid): Flow<List<Folder>> {
         return folderDAO.getFoldersOfAssistant(assistantId.toString())
@@ -29,6 +30,7 @@ class FolderRepository(
             createAt = Instant.now(),
         )
         folderDAO.insert(folder.toEntity())
+        syncTombstoneManager.removeTombstone(folder.id.toString())
         return folder
     }
 
@@ -42,6 +44,7 @@ class FolderRepository(
     suspend fun deleteFolder(id: Uuid) {
         conversationDAO.clearFolder(id.toString())
         folderDAO.deleteById(id.toString())
+        syncTombstoneManager.recordTombstone(id.toString(), "folder")
     }
 }
 
