@@ -1,109 +1,88 @@
-# Repository Guidelines
+---
+description: RikkaHub 安卓手表版项目开发与智能助手开发规范
+alwaysApply: true
+---
 
-## Project Overview
+# RikkaHub（安卓手表版）项目开发规则
 
-RikkaHub is a native Android LLM chat client that supports switching between different AI providers
-for conversations.
-Built with Jetpack Compose, Kotlin, and follows Material 3 Expressive (MD3 Expressive) design language.
+称呼我为"主人"。
+永远使用简体中文回答问题。
 
-## Design Language
+---
 
-The UI follows Material 3 Expressive. New and reworked screens should match it rather than the older baseline
-Material 3 look (cards with dividers, plain forms).
+## 核心开发与协作规则
 
-- The app theme is `MaterialExpressiveTheme` (app/src/main/java/me/rerere/rikkahub/ui/theme/Theme.kt); prefer the
-  expressive variants of components, shapes (`MaterialShapes`), emphasized typography (e.g. `titleSmallEmphasized`)
-  and motion from `androidx.compose.material3` over hand-rolled equivalents.
-- Settings-style and form pages use segmented groups via `CardGroup` (
-  app/src/main/java/me/rerere/rikkahub/ui/components/ui/CardGroup.kt) instead of a card with dividers.
-- Favor larger corner radii, filled/tonal containers, and whole-row click targets.
+1. **【设备定位与手表性能/功耗优化】**
+   - 这是一个运行在安卓智能手表（Wear OS / 深度定制 Android 手表）上的 LLM 客户端应用。手表电池容量普遍仅在 300~500mAh 之间，CPU 性能与散热极度敏感。
+   - 开发时必须将**极致流畅度与功耗控制**放在第一位：严禁无意义的后台高频轮询与空转，流式传输消息（LLM Stream Chunk）更新时必须注意 Compose 重组（Recomposition）范围，避免全屏或非必要节点的高频无效重绘引发发热和掉电。
+   - 杜绝常驻无意义的 CPU 唤醒锁（WakeLock），网络请求及重型解析尽量快速完成并释放资源。
 
-## Build, Test, and Development Commands
+2. **【全架构通用安装包统一规范】（重要）**
+   - **必须统一构造通用架构（Universal APK）的安装包，确保各代全架构芯片的手表均能正常安装使用。**
+   - 编译与打包时必须同时包含 32 位（`armeabi-v7a`）与 64 位（`arm64-v8a`，可选 `x86_64`）原生库，禁止单独只打单一架构包导致老手表无法安装。
+   - 对含有 C/C++ 原生代码的库（如分词库 `libsimple.so`、终端模拟器等），必须提供完整的 32 位与 64 位多架构编译产物，并带有容错降级加载保护，杜绝因架构缺失在 32 位老款手表上启动崩溃。
+
+3. **【微型小屏与手表高密适配规则】**
+   - 深度适配手表微型屏幕（1.4~2.1英寸方形/圆形屏幕）及高像素密度屏。
+   - 布局应紧凑利用空间，优先使用弹性布局与自适应缩放（支持手表 50% 等自适应 Density 缩放模式）。
+   - 触控按钮需保证最小点击触控区域，同时防止在圆形表盘的四角边缘被物理屏幕裁切。
+
+4. **【改动前检查与工作区安全】**
+   - 修改代码前必须先查看相关文件、调用链和现有实现风格，避免凭空重写。
+   - 若工作区已有未提交改动（如用户的临时脚本、未跟踪测试数据等），**禁止随意回滚、覆盖或删除非本次任务相关的内容**；如果这些改动影响当前任务，应基于现状继续处理，必要时向主人确认。
+
+5. **【代码风格与中文注释】**
+   - 优先沿用项目已有架构：Jetpack Compose、Material 3 Expressive 设计规范、Kotlin 现代响应式编程范式。
+   - 新增逻辑应拆分为职责明确的 Domain 模型、Service、Repository、ViewModel 或专用 UI 组件。
+   - **代码中必须配有详细、清晰、正确的中文注释**，解释复杂业务逻辑、性能与内存取舍、状态流转和容错设计，避免单纯重复代码字面含义。
+
+6. **【Gradle 本地验证与串行规则】**
+   - **禁止在同一个工作区内并行启动多个 `gradlew` 进程**，防止中间产物（如构建缓存、临时文件）冲突损坏。
+   - 本机只运行与改动直接相关的轻量定点测试或快速验证任务；耗时极长的全量编译、多架构混淆包打包默认交由 GitHub Actions CI 自动构建。
+   - 禁止无目的执行破坏性清理（clean）或发布签名任务。
+
+7. **【Git 提交规范】**
+   - 每完成一组边界清晰、可独立验证的修改后，及时提交。
+   - 提交标题要求**简短中文**，概括核心变更（例如 `feat: ...` / `fix: ...`），细节和原因在正文描述，禁止使用“提交代码”、“更新”等空泛标题。
+
+---
+
+## 项目业务架构与模块速查
+
+### 模块结构说明
+- **app**: 主程序模块，包含 Compose 界面、ViewModels、核心数据库与业务逻辑。
+- **ai**: AI SDK 抽象层，统一封装 OpenAI、Google Gemini、Anthropic 等不同服务商的模型交互与流式解析。
+- **common**: 通用基础工具类、扩展函数。
+- **document**: 文档解析模块，支持 PDF、DOCX、PPTX、EPUB 文件解析为 Prompt。
+- **highlight**: 代码语法高亮实现。
+- **material3**: Material Color Utility 扩展。
+- **ui**: 无业务依赖的通用可复用 Compose UI 组件。
+- **search**: 联网搜索 SDK，支持 Exa、Tavily、Bing、Brave 等搜索服务商。
+- **speech**: 语音模块，包含 TTS 朗读与 ASR 语音识别。
+- **web**: 内嵌 Ktor Web 服务，承载内置 Web 端 UI。
+- **workspace / terminal**: 沙箱工作区文件系统与终端模拟器。
+
+### 核心核心业务概念
+- **Assistant（助手）**: 维护独立的系统提示词、温度（Temperature）、上下文长度、请求头、工具绑定、正则转换等配置模型。
+- **Conversation（会话）**: 用户与助手之间的会话流，以树状结构维护 `MessageNode`，支持分支与重试，由 `ChatService` 与 `ConversationSession` 统一管理生命周期。
+- **UIMessage**: 跨平台统一消息抽象，承载文本、图片、思考过程（Reasoning）、工具调用等多种内容片段。
+- **Message Transformer**: 消息变换管道（输入转换器 InputMessageTransformer 与输出转换器 OutputMessageTransformer），用于动态模板渲染、`<think>` 标签提取、正则替换及 OCR 等。
+
+---
+
+## 常用开发与构建命令
 
 ```bash
-./gradlew assembleGithubDebug    # 构建 GitHub 渠道的 Debug APK
-./gradlew assembleGithubRelease  # 构建 GitHub Release / 每日构建用的 APK
-./gradlew bundlePlayRelease      # 构建上架 Google Play 的 AAB
-./gradlew test                   # 运行所有模块的 JVM 单元测试
-./gradlew lint                   # 运行 Android Lint
-./gradlew spotlessApply          # 用 ktlint 格式化相对 origin/master 改动过的 Kotlin 文件
-./gradlew spotlessCheck          # 只检查格式不改文件
+# 本地快速构建通用 Debug 安装包
+./gradlew assembleGithubDebug
+
+# 构建 GitHub Release 安装包（生成全架构 Universal APK 与分架构 APK）
+./gradlew assembleGithubRelease
+
+# 本地执行定点单元测试
+./gradlew test --tests "测试类名"
+
+# 代码格式化与检查
+./gradlew spotlessApply
+./gradlew spotlessCheck
 ```
-
-App 有一个 `distribution` 维度的 product flavor：`github`（默认）和 `play`，共用同一个 applicationId。
-渠道差异用 `BuildConfig.IS_PLAY_STORE` 判断（如 Play 版不检查更新、不显示更新提醒）。
-
-## Module Structure
-
-- **app**: Main application module with UI, ViewModels, and core logic
-- **ai**: AI SDK abstraction layer for different providers (OpenAI, Google, Anthropic)
-- **common**: Common utilities and extensions
-- **document**: Document parsing module for handling PDF, DOCX, PPTX, and EPUB files
-- **highlight**: Code syntax highlighting implementation
-- **material3**: Material color utility extensions used by the app UI
-- **ui**: Reusable Compose UI components that do not depend on app logic
-- **search**: Search functionality SDK for multiple providers (Exa, Tavily, Zhipu, Bing, Brave, SearXNG, and others)
-- **speech**: Speech module for TTS and ASR implementations
-- **web**: Embedded web server module that provides Ktor server startup function and hosts static frontend build files (
-  built from web-ui/ React project)
-- **workspace**: Sandboxed per-workspace file system and shell execution environment exposed to the AI as tools.
-- **terminal**: Terminal emulator core taken from termux-app's `terminal-emulator` (package `com.termux.terminal`, kept
-  binary compatible with the `terminal-view` aar). `TerminalSession` runs over a `TerminalTransport`: local PRoot
-  terminals use `LocalPtyTransport`, SSH workspaces use the app's `SshTerminalTransport`. Origin and local changes are
-  listed in terminal/README.md.
-
-## Concepts
-
-- **Assistant**: An assistant configuration with system prompts, model parameters, and conversation isolation. Each
-  assistant maintains its own settings including temperature, context size, custom headers, tools, memory options, regex
-  transformations, and prompt injections (mode/lorebook). Assistants provide isolated chat environments with specific
-  behaviors and capabilities. (app/src/main/java/me/rerere/rikkahub/data/model/Assistant.kt)
-
-- **Conversation**: A persistent conversation thread between the user and an assistant. Each conversation maintains a
-  list of MessageNodes in a tree structure to support message branching, along with metadata like title, creation time,
-  update time, pin status, chat suggestions, optional conversation-level system prompt, and prompt injection bindings.
-  Once a conversation is persisted it also holds a `ConversationConfig` snapshot (chat model, reasoning level, search,
-  MCP servers, workspace, skills) taken from the assistant; from then on chat-page changes to those settings stay on
-  the conversation, and code should read them through `Settings.getAssistantOf(conversation)` /
-  `Settings.getChatModelOf(conversation)` instead of the assistant directly. Once loaded, the in-memory
-  `ConversationSession` is the single source of truth: change a conversation through `ChatService` (which applies
-  `session.update { latest -> ... }` and then `flush()`), never by saving a whole `Conversation` snapshot or one read
-  back from the database; deleting also goes through `ChatService` so a running generation cannot re-insert it. (
-  app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt,
-  app/src/main/java/me/rerere/rikkahub/data/model/ConversationConfig.kt,
-  app/src/main/java/me/rerere/rikkahub/service/ConversationSession.kt)
-
-- **UIMessage**: A platform-agnostic message abstraction that encapsulates chat messages with different types of content
-  parts (text, images, documents, reasoning, tool calls/results, etc.). Each message has a role (USER, ASSISTANT,
-  SYSTEM, TOOL), creation timestamp, model ID, token usage information, and optional annotations. UIMessages support
-  streaming updates through chunk merging. (ai/src/main/java/me/rerere/ai/ui/Message.kt)
-
-- **MessageNode**: A container holding one or more UIMessages to implement message branching functionality. Each node
-  maintains a list of alternative messages and tracks which message is currently selected (selectIndex). This enables
-  users to regenerate responses and switch between different conversation branches, creating a tree-like conversation
-  structure. (app/src/main/java/me/rerere/rikkahub/data/model/Conversation.kt)
-
-- **Message Transformer**: A pipeline mechanism for transforming messages before sending to AI providers (
-  InputMessageTransformer) or after receiving responses (OutputMessageTransformer). Transformers can modify message
-  content, add metadata, apply templates, handle special tags, convert formats, and perform OCR. Common transformers
-  include:
-  - TemplateTransformer: Apply Pebble templates to user messages with variables like time/date
-  - ThinkTagTransformer: Extract `<think>` tags and convert to reasoning parts
-  - RegexOutputTransformer: Apply regex replacements to assistant responses
-  - DocumentAsPromptTransformer: Convert document attachments to text prompts
-  - Base64ImageToLocalFileTransformer: Convert base64 images to local file references
-  - OcrTransformer: Perform OCR on images to extract text
-
-  Output transformers support `visualTransform()` for UI display during streaming and `onGenerationFinish()` for final
-  processing after generation completes.
-  (app/src/main/java/me/rerere/rikkahub/data/ai/transformers/Transformer.kt)
-
-## Internationalization
-
-- String resources are usually located in `app/src/main/res/values*/strings.xml`; feature modules such as `search`
-  may also maintain their own `values*/strings.xml`
-- Use `stringResource(R.string.key_name)` in Compose
-- Page-specific strings should use page prefix (e.g., `setting_page_`)
-- If the user does not explicitly request localization, prioritize implementing functionality without considering
-  localization. (e.g `Text("Hello world")`)
-- Add, translate or clean up strings with the `tools/i18n` CLI (Bun); see the `i18n-localization` skill.

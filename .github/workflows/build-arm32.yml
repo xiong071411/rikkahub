@@ -3,6 +3,7 @@ name: Build 32-bit APK
 on:
   push:
     branches:
+      - personal-main
       - arm32
       - arm32-scale50
       - main
@@ -127,11 +128,11 @@ jobs:
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
-        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/arm32' || github.ref == 'refs/heads/arm32-scale50'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/personal-main' || github.ref == 'refs/heads/arm32' || github.ref == 'refs/heads/arm32-scale50'
         continue-on-error: true
         with:
-          tag_name: ${{ github.ref == 'refs/heads/arm32-scale50' && '3.1.1-watch50' || '3.1.1-arm32' }}
-          name: ${{ github.ref == 'refs/heads/arm32-scale50' && 'RikkaHub 3.1.1 (Watch 50% Scale Edition)' || 'RikkaHub 3.1.1 (32-bit & 64-bit)' }}
+          tag_name: ${{ (github.ref == 'refs/heads/personal-main' || github.ref == 'refs/heads/arm32-scale50') && '3.1.1-watch50' || '3.1.1-arm32' }}
+          name: ${{ (github.ref == 'refs/heads/personal-main' || github.ref == 'refs/heads/arm32-scale50') && 'RikkaHub 3.1.1 (Watch 50% Scale Edition)' || 'RikkaHub 3.1.1 (32-bit & 64-bit)' }}
           prerelease: false
           body: |
             RikkaHub 3.1.1 32位（armeabi-v7a）与多架构构建版本。
