@@ -41,7 +41,7 @@ class SyncTombstoneManager(
             INSERT OR REPLACE INTO sync_tombstone (id, entity_type, deleted_at)
             VALUES (?, ?, ?)
             """.trimIndent(),
-            arrayOf(id, entityType, now)
+            arrayOf<Any>(id, entityType, now)
         )
     }
 
@@ -50,7 +50,7 @@ class SyncTombstoneManager(
         val list = mutableListOf<SyncTombstoneItem>()
         db.query(
             "SELECT id, entity_type, deleted_at FROM sync_tombstone WHERE deleted_at > ? ORDER BY deleted_at ASC",
-            arrayOf(sinceTimestamp)
+            arrayOf<Any>(sinceTimestamp)
         ).use { cursor ->
             val idIdx = cursor.getColumnIndex("id")
             val typeIdx = cursor.getColumnIndex("entity_type")
@@ -71,14 +71,14 @@ class SyncTombstoneManager(
     fun removeTombstone(id: String) {
         database.openHelper.writableDatabase.execSQL(
             "DELETE FROM sync_tombstone WHERE id = ?",
-            arrayOf(id)
+            arrayOf<Any>(id)
         )
     }
 
     fun purgeOlderThan(beforeTimestamp: Long) {
         database.openHelper.writableDatabase.execSQL(
             "DELETE FROM sync_tombstone WHERE deleted_at < ?",
-            arrayOf(beforeTimestamp)
+            arrayOf<Any>(beforeTimestamp)
         )
     }
 }
