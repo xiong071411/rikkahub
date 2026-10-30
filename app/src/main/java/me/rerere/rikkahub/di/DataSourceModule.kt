@@ -299,6 +299,8 @@ val dataSourceModule = module {
             conversationDAO = get(),
             folderDAO = get(),
             messageNodeDAO = get(),
+            favoriteDAO = get(),
+            mediaCreationDAO = get(),
             syncTombstoneManager = get(),
             okHttpClient = get(),
         )

@@ -157,7 +157,7 @@ fun SyncTab(
                                     try {
                                         val summary = vm.startIncrementalSync()
                                         toaster.show(
-                                            "增量同步成功！拉取 ${summary.pulledConversations} 条，推送 ${summary.pushedConversations} 条",
+                                            "增量同步成功！拉取 ${summary.pulledConversations} 条会话、${summary.syncedAssistants} 个助手，推送 ${summary.pushedConversations} 条",
                                             type = ToastType.Success
                                         )
                                     } catch (e: Exception) {

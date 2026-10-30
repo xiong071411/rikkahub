@@ -54,8 +54,11 @@ interface MediaCreationDAO {
     )
     suspend fun getEmptySession(): MediaCreationSessionEntity?
 
-    @Insert
+    @Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE)
     suspend fun insertSession(session: MediaCreationSessionEntity)
+
+    @Query("SELECT * FROM media_creation_session")
+    suspend fun getAllSessions(): List<MediaCreationSessionEntity>
 
     @Update
     suspend fun updateSession(session: MediaCreationSessionEntity)

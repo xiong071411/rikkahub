@@ -177,11 +177,11 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/personal-main' || github.ref == 'refs/heads/arm32' || github.ref == 'refs/heads/arm32-scale50'
         continue-on-error: true
         with:
-          tag_name: ${{ (github.ref == 'refs/heads/personal-main' || github.ref == 'refs/heads/arm32-scale50') && '3.1.1-watch50' || '3.1.1-arm32' }}
-          name: ${{ (github.ref == 'refs/heads/personal-main' || github.ref == 'refs/heads/arm32-scale50') && 'RikkaHub 3.1.1 (Watch 50% Scale Edition)' || 'RikkaHub 3.1.1 (32-bit & 64-bit)' }}
+          tag_name: ${{ (github.ref == 'refs/heads/personal-main' || github.ref == 'refs/heads/arm32-scale50') && '3.1.2' || '3.1.2-arm32' }}
+          name: ${{ (github.ref == 'refs/heads/personal-main' || github.ref == 'refs/heads/arm32-scale50') && 'RikkaHub 3.1.2 (全架构 & 双比例共存版)' || 'RikkaHub 3.1.2 (32-bit & 64-bit)' }}
           prerelease: false
           body: |
-            RikkaHub 3.1.1 32位（armeabi-v7a）与多架构构建版本（包含官方版、手表50%共存版与正常原比例共存版）。
+            RikkaHub 3.1.2 32位（armeabi-v7a）与多架构构建版本（包含官方版、手表50%共存版与正常原比例共存版，全面集成增量同步与全配置漫游）。
           files: |
             app/build/outputs/apk/github/release/*.apk
             app/build/outputs/apk/coexist/release/*.apk
