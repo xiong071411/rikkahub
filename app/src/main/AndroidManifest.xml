@@ -116,7 +116,7 @@
 
         <data
           android:host="shortcut"
-          android:scheme="rikkahub" />
+          android:scheme="${deepLinkScheme}" />
       </intent-filter>
     </activity>
     <service

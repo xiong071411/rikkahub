@@ -34,6 +34,8 @@ android {
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
         }
+
+        manifestPlaceholders["deepLinkScheme"] = "rikkahub"
     }
 
     splits {
@@ -109,6 +111,13 @@ android {
         create("github") {
             dimension = "distribution"
             isDefault = true
+            buildConfigField("boolean", "IS_PLAY_STORE", "false")
+        }
+        // 共存版：使用独立的 applicationId (me.rerere.rikkahub.coexist)，可与官方版本在同一台设备/手表上同时安装运行
+        create("coexist") {
+            dimension = "distribution"
+            applicationId = "me.rerere.rikkahub.coexist"
+            manifestPlaceholders["deepLinkScheme"] = "rikkahub-coexist"
             buildConfigField("boolean", "IS_PLAY_STORE", "false")
         }
         create("play") {
