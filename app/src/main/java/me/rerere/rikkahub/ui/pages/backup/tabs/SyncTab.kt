@@ -77,6 +77,7 @@ private fun formatEpochMillis(epochMillis: Long): String {
 private fun entityTypeLabel(entityType: String): String = when (entityType) {
     "conversation" -> "对话"
     "folder" -> "文件夹"
+    "memory_file" -> "助手记忆"
     "assistant" -> "助手"
     "provider" -> "服务商"
     "favorite" -> "收藏"
@@ -238,7 +239,7 @@ fun SyncTab(
                     if (syncConfig.authToken.isBlank()) {
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "尚未填写 Sync Token：请在下方填入服务端独立生成的 RIKKA_SYNC_TOKEN（不同于网页登录密码）。",
+                            text = "尚未填写 Sync Token：请在下方填入服务端配置的 RIKKA_SYNC_TOKEN。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error
                         )

@@ -125,9 +125,8 @@ jobs:
           EOF
           fi
 
-          if [ ! -f app/release.jks ]; then
-            keytool -genkeypair -v -keystore app/release.jks -alias rikkahub -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=RikkaHub, OU=Rikka, O=Rikka, L=City, S=State, C=CN"
-          fi
+          # 固定沿用仓库签名；缺失时直接失败，禁止生成无法覆盖安装的随机签名。
+          test -f app/release.jks || { echo "Missing release keystore"; exit 1; }
           echo "storeFile=release.jks" > local.properties
           echo "storePassword=123456" >> local.properties
           echo "keyAlias=rikkahub" >> local.properties
@@ -160,7 +159,12 @@ jobs:
       - name: Build with Gradle
         run: |
           chmod +x gradlew
-          ./gradlew assembleGithubRelease assembleCoexistRelease assembleCoexistNormalRelease --stacktrace
+          ./gradlew :app:testCoexistNormalDebugUnitTest --tests '*Sync*' --tests '*MemoryRepositoryTest' \
+            --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
+            '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
+          ./gradlew assembleGithubRelease assembleCoexistRelease assembleCoexistNormalRelease \
+            --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
+            '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
 
       - name: List APK outputs
         run: |
@@ -176,7 +180,16 @@ jobs:
         run: |
           VERSION_NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -n 1)
           echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          VERSION_CODE=$(grep -oP 'versionCode\s*=\s*\K[0-9]+' app/build.gradle.kts | head -n 1)
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
           echo "Detected versionName=${VERSION_NAME}"
+
+      - name: Verify every release APK
+        run: |
+          BUILD_TOOLS=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          python3 tools/verify_release_apks.py --root app/build/outputs/apk --build-tools "$BUILD_TOOLS" \
+            --version-code '${{ steps.app_meta.outputs.version_code }}' \
+            --version-name '${{ steps.app_meta.outputs.version_name }}' --commit "$GITHUB_SHA"
 
       - name: Upload APKs artifact
         uses: actions/upload-artifact@v4
@@ -186,6 +199,14 @@ jobs:
             app/build/outputs/apk/github/release/*.apk
             app/build/outputs/apk/coexist/release/*.apk
             app/build/outputs/apk/coexistNormal/release/*.apk
+            app/build/outputs/apk/*-manifest.json
+            app/build/outputs/apk/SHA256SUMS-*.txt
+
+      - name: Archive mapping files
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikkahub-mapping-${{ steps.app_meta.outputs.version_name }}
+          path: app/build/outputs/mapping/*Release/mapping.txt
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

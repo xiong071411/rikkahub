@@ -30,7 +30,13 @@ object CanonicalSyncHash {
     }
 
     private val VALID_REASONING_LEVELS = setOf(
-        "off", "auto", "low", "medium", "high", "xhigh", "max"
+        "off",
+        "auto",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
     )
 
     private val VOLATILE_ROOT_KEYS: Map<String, Set<String>> = mapOf(
@@ -39,6 +45,7 @@ object CanonicalSyncHash {
         "media_session" to setOf("updateAt"),
         "media_record" to setOf("updateAt"),
         "favorite" to setOf("updatedAt"),
+        "memory_file" to setOf("updatedAt"),
     )
 
     /**
@@ -287,6 +294,7 @@ object CanonicalSyncHash {
             "assistant" -> normalizeAssistantJson(obj, filesDir)
             "media_session" -> normalizeMediaSessionJson(obj, filesDir)
             "media_record" -> normalizeMediaRecordJson(obj, filesDir)
+            "extra_setting" -> SyncSettingsContract.portablePreferences(obj, filesDir)
             else -> obj
         }
     }
@@ -342,6 +350,17 @@ object CanonicalSyncHash {
         }
 
         when (entityType) {
+            "extra_setting" -> {
+                val display = obj["displaySetting"] as? JsonObject
+                val avatar = display?.get("userAvatar") as? JsonObject
+                listOf(avatar?.get("url"), display?.get("chatCustomFontPath")).forEach { value ->
+                    val path = (value as? JsonPrimitive)?.takeIf { it.isString }?.content
+                    if (path != null) {
+                        val normalized = AttachmentPathNormalizer.normalizeAttachmentUrl(path, filesDir)
+                        if (AttachmentPathNormalizer.isManagedRelativePath(normalized)) refs.add(normalized)
+                    }
+                }
+            }
             "conversation" -> {
                 val nodes = obj["messageNodes"] as? JsonArray
                 nodes?.forEach { nodeEl ->

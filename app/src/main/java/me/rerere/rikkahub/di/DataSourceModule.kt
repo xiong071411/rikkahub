@@ -313,6 +313,7 @@ val dataSourceModule = module {
             syncV2Dao = get(),
             syncMutationRecorder = get(),
             settingsStore = get(),
+            memoryRepository = get(),
             conversationRepository = get(),
             folderRepository = get(),
             conversationDAO = get(),

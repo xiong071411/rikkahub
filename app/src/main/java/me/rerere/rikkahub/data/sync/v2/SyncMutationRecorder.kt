@@ -37,13 +37,16 @@ class SyncMutationRecorder(
     private val syncV2Dao: SyncV2Dao,
     private val filesDirProvider: () -> File? = { null },
 ) {
-    private suspend fun <R> runInTransaction(block: suspend () -> R): R {
+    suspend fun <R> runInTransaction(block: suspend () -> R): R {
         return if (database != null) {
             database.withTransaction { block() }
         } else {
             block()
         }
     }
+
+    suspend fun hasPendingMutation(entityType: String, entityId: String): Boolean =
+        syncV2Dao.getOutboxEntry(entityType, entityId) != null
 
     suspend fun recordUpsert(
         entityType: String,

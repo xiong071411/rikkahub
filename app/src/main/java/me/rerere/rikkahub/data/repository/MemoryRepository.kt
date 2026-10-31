@@ -4,10 +4,14 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.encodeToString
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.db.entity.MemoryFileEntity
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.MemoryFile
+import me.rerere.rikkahub.data.sync.v2.MemorySyncPayload
+import me.rerere.rikkahub.data.sync.v2.SyncMutationRecorder
+import me.rerere.rikkahub.utils.JsonInstant
 
 sealed interface MemoryWriteResult {
     /** [file] 为 null 表示文件已被删除 */
@@ -25,7 +29,10 @@ sealed interface MemoryWriteResult {
  * 写操作都带 ifVersion 做乐观锁：传 [NEW_FILE_VERSION] 表示新建，传版本号表示基于该版本修改，
  * 传 null 则不校验（用户在界面里直接编辑）。
  */
-class MemoryRepository(private val memoryDAO: MemoryDAO) {
+class MemoryRepository(
+    private val memoryDAO: MemoryDAO,
+    private val syncMutationRecorder: SyncMutationRecorder? = null,
+) {
     companion object {
         const val GLOBAL_MEMORY_ID = "__global__"
         const val NEW_FILE_VERSION = "new"
@@ -33,6 +40,35 @@ class MemoryRepository(private val memoryDAO: MemoryDAO) {
 
     // 读取、校验版本、写入必须一起完成，否则两个写入方会互相覆盖
     private val writeLock = Mutex()
+
+    suspend fun getAllFiles(): List<MemoryFileEntity> = memoryDAO.getAllFiles()
+
+    private suspend fun <T> transaction(block: suspend () -> T): T =
+        if (syncMutationRecorder != null) syncMutationRecorder.runInTransaction(block) else block()
+
+    private suspend fun recordFile(file: MemoryFileEntity) {
+        val payload = MemorySyncPayload.fromEntity(file)
+        syncMutationRecorder?.recordUpsert("memory_file", payload.entityId, JsonInstant.encodeToString(payload))
+    }
+
+    /** 与本机编辑共用写锁；拉取期间新产生的修改留在 Outbox，远端内容暂存等待冲突判断。 */
+    suspend fun upsertFromSync(file: MemoryFileEntity, force: Boolean = false): Boolean = writeLock.withLock {
+        val payload = MemorySyncPayload.fromEntity(file).validate()
+        if (!force &&
+            syncMutationRecorder?.hasPendingMutation("memory_file", payload.entityId) == true) {
+            return@withLock false
+        }
+        memoryDAO.upsertFile(file)
+        true
+    }
+
+    suspend fun deleteFromSync(entityId: String, force: Boolean = false): Boolean = writeLock.withLock {
+        if (!force && syncMutationRecorder?.hasPendingMutation("memory_file", entityId) == true) return@withLock false
+        memoryDAO.getAllFiles().firstOrNull { MemorySyncPayload.entityId(it.assistantId, it.path) == entityId }?.let {
+            memoryDAO.deleteFile(it.assistantId, it.path)
+        }
+        true
+    }
 
     fun getFilesFlow(assistantId: String): Flow<List<MemoryFile>> =
         memoryDAO.getFilesOfAssistantFlow(assistantId).map { entities -> entities.map { it.toMemoryFile() } }
@@ -95,18 +131,33 @@ class MemoryRepository(private val memoryDAO: MemoryDAO) {
         if (current == null || (ifVersion != null && ifVersion != current.version)) {
             return MemoryWriteResult.Conflict(current)
         }
-        memoryDAO.deleteFile(assistantId, normalized)
+        transaction {
+            memoryDAO.deleteFile(assistantId, normalized)
+            syncMutationRecorder?.recordDelete("memory_file", MemorySyncPayload.entityId(assistantId, normalized))
+        }
         MemoryWriteResult.Success(null)
     }
 
-    suspend fun deleteFilesOfAssistant(assistantId: String) {
-        memoryDAO.deleteFilesOfAssistant(assistantId)
+    suspend fun deleteFilesOfAssistant(assistantId: String) = writeLock.withLock {
+        transaction {
+            val files = memoryDAO.getFilesOfAssistant(assistantId)
+            memoryDAO.deleteFilesOfAssistant(assistantId)
+            files.forEach {
+                syncMutationRecorder?.recordDelete(
+                    "memory_file",
+                    MemorySyncPayload.entityId(assistantId, it.path)
+                )
+            }
+        }
     }
 
-    suspend fun copyFiles(fromAssistantId: String, toAssistantId: String) {
+    suspend fun copyFiles(fromAssistantId: String, toAssistantId: String) = writeLock.withLock {
         val files = memoryDAO.getFilesOfAssistant(fromAssistantId)
-        if (files.isEmpty()) return
-        memoryDAO.upsertFiles(files.map { it.copy(assistantId = toAssistantId) })
+        val copied = files.map { it.copy(assistantId = toAssistantId) }
+        transaction {
+            memoryDAO.upsertFiles(copied)
+            copied.forEach { recordFile(it) }
+        }
     }
 
     private sealed interface Edit {
@@ -148,7 +199,10 @@ class MemoryRepository(private val memoryDAO: MemoryDAO) {
             content = content,
             updatedAt = System.currentTimeMillis(),
         )
-        memoryDAO.upsertFile(entity)
+        transaction {
+            memoryDAO.upsertFile(entity)
+            recordFile(entity)
+        }
         MemoryWriteResult.Success(entity.toMemoryFile())
     }
 

@@ -8,6 +8,9 @@ import me.rerere.rikkahub.data.db.entity.MemoryFileEntity
 
 @Dao
 interface MemoryDAO {
+    @Query("SELECT * FROM memory_file ORDER BY assistant_id, path")
+    suspend fun getAllFiles(): List<MemoryFileEntity>
+
     @Query("SELECT * FROM memory_file WHERE assistant_id = :assistantId ORDER BY path")
     fun getFilesOfAssistantFlow(assistantId: String): Flow<List<MemoryFileEntity>>
 

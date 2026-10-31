@@ -102,6 +102,7 @@ class SyncV2EngineTest {
     private lateinit var favoriteDao: FakeFavoriteDao
     private lateinit var mediaDao: FakeMediaCreationDao
     private lateinit var server: FakeSyncV2HttpServer
+    private lateinit var memoryRepository: me.rerere.rikkahub.data.repository.MemoryRepository
     private lateinit var engine: IncrementalSyncEngine
 
     private val validToken = "rk_sync_unit_test_secret_token"
@@ -126,6 +127,7 @@ class SyncV2EngineTest {
             syncV2Dao = syncV2Dao,
             filesDirProvider = { filesDir },
         )
+        memoryRepository = me.rerere.rikkahub.data.repository.MemoryRepository(me.rerere.rikkahub.data.repository.FakeMemoryDAO(), recorder)
         conversationBridge = FakeSyncConversationBridge(recorder, filesDir)
         folderDao = FakeFolderDao()
         favoriteDao = FakeFavoriteDao()
@@ -142,6 +144,7 @@ class SyncV2EngineTest {
             syncV2Dao = syncV2Dao,
             syncMutationRecorder = recorder,
             settingsStore = settingsStore,
+            memoryRepository = memoryRepository,
             conversationBridge = conversationBridge,
             folderDAO = folderDao,
             favoriteDAO = favoriteDao,
@@ -438,6 +441,92 @@ class SyncV2EngineTest {
         assertTrue("原子下载完成后目录内不得残留 .tmp 文件", leftoverTmp.isEmpty())
     }
 
+    @Test
+    fun `global and assistant memory sync without attachments and survive deletes`() = runBlocking {
+        engine.sync(defaultConfig).getOrThrow()
+        val owner = Uuid.random().toString()
+        memoryRepository.writeFile("__global__", "/preferences.md", "共享偏好：左侧翻页")
+        memoryRepository.writeFile(owner, "/profile.md", "独立助手记忆")
+        engine.sync(defaultConfig.copy(syncFiles = false)).getOrThrow()
+        val globalId = MemorySyncPayload.entityId("__global__", "/preferences.md")
+        val ownId = MemorySyncPayload.entityId(owner, "/profile.md")
+        assertTrue(server.entities.getValue("memory_file" to globalId).payload.contains("共享偏好"))
+        assertTrue(server.entities.getValue("memory_file" to ownId).payload.contains("独立助手记忆"))
+        val remote = MemorySyncPayload(owner, "/topics/test.md", "云端新记忆", 123)
+        server.seedRemoteEntity("memory_file", remote.entityId, "upsert", JsonInstant.encodeToString(remote))
+        engine.sync(defaultConfig.copy(syncFiles = false)).getOrThrow()
+        assertEquals("云端新记忆", memoryRepository.getFile(owner, remote.path)?.content)
+        memoryRepository.deleteFile(owner, "/profile.md")
+        engine.sync(defaultConfig).getOrThrow()
+        assertEquals("delete", server.entities.getValue("memory_file" to ownId).operation)
+        assertNotNull(memoryRepository.getFile("__global__", "/preferences.md"))
+    }
+
+    @Test
+    fun `offline memory conflict retains both complete copies`() = runBlocking {
+        val remote = MemorySyncPayload("__global__", "/profile.md", "初始记忆", 1)
+        server.seedRemoteEntity("memory_file", remote.entityId, "upsert", JsonInstant.encodeToString(remote))
+        engine.sync(defaultConfig).getOrThrow()
+        memoryRepository.writeFile(remote.assistantId, remote.path, "手表离线记忆")
+        server.seedRemoteEntity("memory_file", remote.entityId, "upsert", JsonInstant.encodeToString(remote.copy(content = "手机新增记忆", updatedAt = 2)))
+        engine.sync(defaultConfig).getOrThrow()
+        val conflict = syncV2Dao.getUnresolvedConflicts().single { it.entityType == "memory_file" }
+        assertTrue(conflict.localPayload.contains("手表离线记忆"))
+        assertTrue(conflict.serverPayload.contains("手机新增记忆"))
+        assertEquals("手机新增记忆", memoryRepository.getFile(remote.assistantId, remote.path)?.content)
+    }
+
+    @Test
+    fun `initial pull applies assistant references and preferences atomically across pages`() = runBlocking {
+        val mode = me.rerere.rikkahub.data.model.PromptInjection.ModeInjection(id = Uuid.random(), name = "远端模式", content = "test")
+        val assistant = me.rerere.rikkahub.data.model.Assistant(id = Uuid.random(), modeInjectionIds = setOf(mode.id))
+        server.seedRemoteEntity("assistant", assistant.id.toString(), "upsert", JsonInstant.encodeToString(assistant))
+        server.seedRemoteEntity("extra_setting", "mode_injections", "upsert", JsonInstant.encodeToString(listOf(mode)))
+        server.seedRemoteEntity("extra_setting", SyncSettingsContract.PREFERENCES_KEY, "upsert", """{"displaySetting":{"messageJumperOnLeft":true}}""")
+        engine.sync(defaultConfig).getOrThrow()
+        val settings = settingsStore.awaitLoaded()
+        assertTrue(settings.displaySetting.messageJumperOnLeft)
+        assertEquals(setOf(mode.id), settings.assistants.single { it.id == assistant.id }.modeInjectionIds)
+    }
+
+    @Test
+    fun `upgrade replays memory ignored by an older client cursor`() = runBlocking {
+        val remote = MemorySyncPayload("__global__", "/profile.md", "旧客户端没处理的记忆", 1)
+        server.seedRemoteEntity("memory_file", remote.entityId, "upsert", JsonInstant.encodeToString(remote))
+        syncV2Dao.upsertMeta(SyncMetaEntity("server_id", server.serverId))
+        syncV2Dao.upsertMeta(SyncMetaEntity("cursor", server.currentRevision.toString()))
+        syncV2Dao.upsertMeta(SyncMetaEntity("v2_reconciled", "1"))
+        engine.sync(defaultConfig).getOrThrow()
+        assertEquals(remote.content, memoryRepository.getFile(remote.assistantId, remote.path)?.content)
+        assertEquals(SyncSettingsContract.COVERAGE_VERSION, syncV2Dao.getMetaValue("sync_coverage_version"))
+    }
+
+    @Test
+    fun `memory edited while push is in flight keeps its newer mutation`() = runBlocking {
+        engine.sync(defaultConfig).getOrThrow()
+        memoryRepository.writeFile("__global__", "/preferences.md", "已发出的版本")
+        server.onBeforePush = {
+            runBlocking { memoryRepository.writeFile("__global__", "/preferences.md", "同步期间的新版本") }
+        }
+        engine.sync(defaultConfig).getOrThrow()
+        val identity = MemorySyncPayload.entityId("__global__", "/preferences.md")
+        assertTrue(syncV2Dao.getOutboxEntry("memory_file", identity)!!.payload.contains("同步期间的新版本"))
+        assertEquals("同步期间的新版本", memoryRepository.getFile("__global__", "/preferences.md")?.content)
+        engine.sync(defaultConfig).getOrThrow()
+        assertTrue(server.entities.getValue("memory_file" to identity).payload.contains("同步期间的新版本"))
+        assertTrue(syncV2Dao.getAllOutboxOrdered().isEmpty())
+    }
+
+    @Test
+    fun `invalid preferences are not acknowledged as synced`() = runBlocking {
+        server.seedRemoteEntity("extra_setting", SyncSettingsContract.PREFERENCES_KEY, "upsert", """{"displaySetting":{"messageJumperOnLeft":"invalid"}}""")
+        assertTrue(engine.sync(defaultConfig).isFailure)
+        assertEquals(null, syncV2Dao.getEntityState("extra_setting", SyncSettingsContract.PREFERENCES_KEY))
+        server.seedRemoteEntity("extra_setting", SyncSettingsContract.PREFERENCES_KEY, "upsert", """{"displaySetting":{"messageJumperOnLeft":true}}""")
+        engine.sync(defaultConfig).getOrThrow()
+        assertTrue(settingsStore.awaitLoaded().displaySetting.messageJumperOnLeft)
+    }
+
     private fun sampleConversation(title: String, userText: String): Conversation = Conversation(
         id = Uuid.random(),
         assistantId = TEST_ASSISTANT_ID,
@@ -662,16 +751,28 @@ private class FakeFolderDao : FolderDAO {
     override fun getFoldersOfAssistant(assistantId: String): Flow<List<FolderEntity>> = MutableStateFlow(emptyList())
     override suspend fun getFolderById(id: String): FolderEntity? = map[id]
     override suspend fun getAllFolders(): List<FolderEntity> = map.values.toList()
-    override suspend fun insert(folder: FolderEntity) { map[folder.id] = folder }
-    override suspend fun update(folder: FolderEntity) { map[folder.id] = folder }
-    override suspend fun rename(id: String, name: String) { map[id]?.let { map[id] = it.copy(name = name) } }
-    override suspend fun delete(folder: FolderEntity) { map.remove(folder.id) }
-    override suspend fun deleteById(id: String) { map.remove(id) }
+    override suspend fun insert(folder: FolderEntity) {
+        map[folder.id] = folder
+    }
+    override suspend fun update(folder: FolderEntity) {
+        map[folder.id] = folder
+    }
+    override suspend fun rename(id: String, name: String) {
+        map[id]?.let { map[id] = it.copy(name = name) }
+    }
+    override suspend fun delete(folder: FolderEntity) {
+        map.remove(folder.id)
+    }
+    override suspend fun deleteById(id: String) {
+        map.remove(id)
+    }
 }
 
 private class FakeFavoriteDao : FavoriteDAO {
     private val map = LinkedHashMap<String, FavoriteEntity>()
-    override suspend fun upsert(favorite: FavoriteEntity) { map[favorite.id] = favorite }
+    override suspend fun upsert(favorite: FavoriteEntity) {
+        map[favorite.id] = favorite
+    }
     override fun listAll(): Flow<List<FavoriteEntity>> = MutableStateFlow(emptyList())
     override suspend fun getAllFavorites(): List<FavoriteEntity> = map.values.toList()
     override fun listByType(type: String): Flow<List<FavoriteEntity>> = MutableStateFlow(emptyList())
@@ -706,9 +807,15 @@ private class FakeMediaCreationDao : MediaCreationDAO {
     }
 
     override suspend fun getAllSessions(): List<MediaCreationSessionEntity> = sessions.values.toList()
-    override suspend fun updateSession(session: MediaCreationSessionEntity) { sessions[session.id] = session }
-    override suspend fun renameSession(id: String, title: String) { sessions[id]?.let { sessions[id] = it.copy(title = title) } }
-    override suspend fun updateDraft(id: String, draft: String) { sessions[id]?.let { sessions[id] = it.copy(draft = draft) } }
+    override suspend fun updateSession(session: MediaCreationSessionEntity) {
+        sessions[session.id] = session
+    }
+    override suspend fun renameSession(id: String, title: String) {
+        sessions[id]?.let { sessions[id] = it.copy(title = title) }
+    }
+    override suspend fun updateDraft(id: String, draft: String) {
+        sessions[id]?.let { sessions[id] = it.copy(draft = draft) }
+    }
 
     override suspend fun deleteSession(id: String) {
         // ON DELETE CASCADE 语义
@@ -757,8 +864,12 @@ private class FakeMediaCreationDao : MediaCreationDAO {
         check(record.sessionId in sessions && record.nodeId in nodes) { "FK violation" }
         records[record.id] = record
     }
-    override suspend fun updateRecord(record: MediaCreationRecordEntity) { records[record.id] = record }
-    override suspend fun deleteRecord(id: String) { records.remove(id) }
+    override suspend fun updateRecord(record: MediaCreationRecordEntity) {
+        records[record.id] = record
+    }
+    override suspend fun deleteRecord(id: String) {
+        records.remove(id)
+    }
 }
 
 /**
@@ -788,6 +899,7 @@ private class FakeSyncV2HttpServer(
     var forceUpgradeRequired426: Boolean = false
     var dropPushResponseAfterCommitOnce: Boolean = false
     var onAfterFirstPullPage: (() -> Unit)? = null
+    var onBeforePush: (() -> Unit)? = null
 
     @Synchronized
     fun seedRemoteEntity(entityType: String, entityId: String, operation: String, rawPayload: String): StoredEntity {
@@ -830,6 +942,7 @@ private class FakeSyncV2HttpServer(
         return when {
             path == "/api/sync/v2/info" -> {
                 val dto = SyncV2InfoResponseDto(
+                    supported_entity_types = listOf("memory_file"),
                     protocol_version = 2,
                     server_id = serverId,
                     current_revision = currentRevision,
@@ -879,6 +992,9 @@ private class FakeSyncV2HttpServer(
             }
 
             path == "/api/sync/v2/push" -> {
+                val hook = onBeforePush
+                onBeforePush = null
+                hook?.invoke()
                 val pushReq = JsonInstant.decodeFromString<SyncV2PushRequestDto>(bodyText)
                 val results = mutableListOf<SyncV2MutationResultDto>()
                 for (m in pushReq.mutations) {

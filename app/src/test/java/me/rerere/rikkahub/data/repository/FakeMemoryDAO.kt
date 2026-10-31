@@ -9,6 +9,8 @@ import me.rerere.rikkahub.data.db.entity.MemoryFileEntity
 internal class FakeMemoryDAO : MemoryDAO {
     private val files = MutableStateFlow<List<MemoryFileEntity>>(emptyList())
 
+    override suspend fun getAllFiles(): List<MemoryFileEntity> = files.value
+
     override fun getFilesOfAssistantFlow(assistantId: String): Flow<List<MemoryFileEntity>> =
         files.map { all -> all.filter { it.assistantId == assistantId }.sortedBy { it.path } }
 
