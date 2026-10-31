@@ -105,6 +105,7 @@ data class FavoriteSyncPayload(
     val snapshotJson: String,
     val metaJson: String? = null,
     val createdAt: Long,
+    val updatedAt: Long = createdAt,
 )
 
 @Serializable
@@ -521,6 +522,7 @@ class IncrementalSyncEngine(
                             snapshotJson = favPayload.snapshotJson,
                             metaJson = favPayload.metaJson,
                             createdAt = favPayload.createdAt,
+                            updatedAt = favPayload.updatedAt,
                         )
                     )
                 }
@@ -655,6 +657,7 @@ class IncrementalSyncEngine(
                             snapshotJson = fav.snapshotJson,
                             metaJson = fav.metaJson,
                             createdAt = fav.createdAt,
+                            updatedAt = fav.updatedAt,
                         )
                     ),
                     updateAt = fav.createdAt
