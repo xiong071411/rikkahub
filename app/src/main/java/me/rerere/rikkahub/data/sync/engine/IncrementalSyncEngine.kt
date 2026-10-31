@@ -6,13 +6,13 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.asr.ASRProviderSetting
 import me.rerere.mediagen.provider.MediaGenerationProviderSetting
-import me.rerere.rikkahub.data.datastore.McpServerConfig
-import me.rerere.rikkahub.data.datastore.PromptInjection
-import me.rerere.rikkahub.data.datastore.QuickMessage
+import me.rerere.rikkahub.data.ai.mcp.McpServerConfig
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.SyncServerConfig
 import me.rerere.rikkahub.data.db.dao.ConversationDAO
@@ -27,6 +27,8 @@ import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.Lorebook
+import me.rerere.rikkahub.data.model.PromptInjection
+import me.rerere.rikkahub.data.model.QuickMessage
 import me.rerere.rikkahub.data.model.Tag
 import me.rerere.rikkahub.data.model.mapLocalFileUrls
 import me.rerere.rikkahub.data.repository.ConversationRepository
@@ -95,6 +97,17 @@ data class FavoriteSyncDto(
 )
 
 @Serializable
+data class FavoriteSyncPayload(
+    val id: String,
+    val refKey: String,
+    val type: String,
+    val refJson: String,
+    val snapshotJson: String,
+    val metaJson: String? = null,
+    val createdAt: Long,
+)
+
+@Serializable
 data class MediaCreationSyncDto(
     val id: String,
     val title: String = "",
@@ -103,10 +116,34 @@ data class MediaCreationSyncDto(
 )
 
 @Serializable
+data class MediaCreationSyncPayload(
+    val id: String,
+    val title: String,
+    val draft: String,
+    val createAt: Long,
+    val updateAt: Long,
+)
+
+@Serializable
 data class ExtraSettingsSyncDto(
     val key: String,
     val payload: String,
     val updateAt: Long = 0,
+)
+
+@Serializable
+data class AiPreferencesSyncDto(
+    val favoriteModels: List<String> = emptyList(),
+    val chatModelId: String = "",
+    val fastModelId: String = "",
+    val enableAutoTitle: Boolean = true,
+    val titlePrompt: String = "",
+    val translatePrompt: String = "",
+    val translateTargetLanguage: String = "zh-CN",
+    val enableSuggestion: Boolean = true,
+    val suggestionPrompt: String = "",
+    val ocrPrompt: String = "",
+    val defaultTTSPlaybackSpeed: Float = 1.0f,
 )
 
 @Serializable
@@ -191,7 +228,7 @@ data class SyncSummary(
 
 /**
  * 专为 RikkaHub 打造的完全替代并超越冷备份的【全量业务实体增量同步引擎】
- * 覆盖：会话、文件夹、助手配置、大模型提供商Key、收藏夹、生图会话、世界书知识库、附件文件
+ * 覆盖：会话、文件夹、助手配置、大模型提供商Key、收藏夹、生图会话、世界书知识库、AI提示词模板、附件文件
  */
 class IncrementalSyncEngine(
     private val context: Context,
@@ -268,12 +305,12 @@ class IncrementalSyncEngine(
             val pullHttpReq = Request.Builder()
                 .url(buildUrl(baseUrl, "api/sync/pull"))
                 .addHeader("Authorization", "Bearer $token")
-                .post(json.encodeToString(PullRequestDto.serializer(), pullReq).toRequestBody(JSON_MEDIA_TYPE))
+                .post(json.encodeToString(pullReq).toRequestBody(JSON_MEDIA_TYPE))
                 .build()
 
             val pullResponse: PullResponseDto = okHttpClient.newCall(pullHttpReq).execute().use { resp ->
                 if (!resp.isSuccessful) error("Pull 失败: HTTP ${resp.code}")
-                json.decodeFromString(PullResponseDto.serializer(), resp.body?.string().orEmpty())
+                json.decodeFromString(resp.body?.string().orEmpty())
             }
 
             // 2. 本地合并阶段 (Merge)
@@ -326,7 +363,7 @@ class IncrementalSyncEngine(
             settingsStore.update { currentSettings ->
                 var updated = currentSettings
 
-                // 2.2.1 助手合并
+                // 2.2.1 助手合并 (解决新设备上自定义助手与消息消失的问题)
                 if (pullResponse.assistants.isNotEmpty()) {
                     val remoteAssistants = pullResponse.assistants.mapNotNull {
                         runCatching { json.decodeFromString<Assistant>(it.payload) }.getOrNull()
@@ -340,7 +377,7 @@ class IncrementalSyncEngine(
                     syncedAssts = remoteAssistants.size
                 }
 
-                // 2.2.2 提供商合并
+                // 2.2.2 提供商合并 (API Key 与 Base URL 漫游)
                 if (pullResponse.providers.isNotEmpty()) {
                     val remoteProviders = pullResponse.providers.mapNotNull {
                         runCatching { json.decodeFromString<ProviderSetting>(it.payload) }.getOrNull()
@@ -354,7 +391,7 @@ class IncrementalSyncEngine(
                     syncedProvs = remoteProviders.size
                 }
 
-                // 2.2.3 扩展设置合并 (标签、世界书、注入模板、快捷短语、主题)
+                // 2.2.3 扩展设置合并 (标签、世界书、注入模板、快捷短语、主题、AI全局偏好)
                 pullResponse.extra_settings.forEach { extra ->
                     when (extra.key) {
                         "assistant_tags" -> {
@@ -423,8 +460,26 @@ class IncrementalSyncEngine(
                         "mcp_servers" -> {
                             val mcps = runCatching { json.decodeFromString<List<McpServerConfig>>(extra.payload) }.getOrNull()
                             if (mcps != null) {
-                                val existingNames = updated.mcpServers.map { it.name }.toSet()
-                                updated = updated.copy(mcpServers = updated.mcpServers + mcps.filter { it.name !in existingNames })
+                                val existingIds = updated.mcpServers.map { it.id }.toSet()
+                                updated = updated.copy(mcpServers = updated.mcpServers + mcps.filter { it.id !in existingIds })
+                            }
+                        }
+                        "ai_preferences" -> {
+                            val prefs = runCatching { json.decodeFromString<AiPreferencesSyncDto>(extra.payload) }.getOrNull()
+                            if (prefs != null) {
+                                updated = updated.copy(
+                                    favoriteModels = prefs.favoriteModels.mapNotNull { runCatching { Uuid.parse(it) }.getOrNull() },
+                                    chatModelId = runCatching { Uuid.parse(prefs.chatModelId) }.getOrNull() ?: updated.chatModelId,
+                                    fastModelId = runCatching { Uuid.parse(prefs.fastModelId) }.getOrNull() ?: updated.fastModelId,
+                                    enableAutoTitle = prefs.enableAutoTitle,
+                                    titlePrompt = prefs.titlePrompt.ifEmpty { updated.titlePrompt },
+                                    translatePrompt = prefs.translatePrompt.ifEmpty { updated.translatePrompt },
+                                    translateTargetLanguage = prefs.translateTargetLanguage.ifEmpty { updated.translateTargetLanguage },
+                                    enableSuggestion = prefs.enableSuggestion,
+                                    suggestionPrompt = prefs.suggestionPrompt.ifEmpty { updated.suggestionPrompt },
+                                    ocrPrompt = prefs.ocrPrompt.ifEmpty { updated.ocrPrompt },
+                                    defaultTTSPlaybackSpeed = prefs.defaultTTSPlaybackSpeed,
+                                )
                             }
                         }
                     }
@@ -455,17 +510,35 @@ class IncrementalSyncEngine(
 
             // 2.4 应用远端收藏夹 (Favorites)
             pullResponse.favorites.forEach { favDto ->
-                val favEntity = runCatching { json.decodeFromString<FavoriteEntity>(favDto.payload) }.getOrNull()
-                if (favEntity != null) {
-                    favoriteDAO.upsert(favEntity)
+                val favPayload = runCatching { json.decodeFromString<FavoriteSyncPayload>(favDto.payload) }.getOrNull()
+                if (favPayload != null) {
+                    favoriteDAO.upsert(
+                        FavoriteEntity(
+                            id = favPayload.id,
+                            refKey = favPayload.refKey,
+                            type = favPayload.type,
+                            refJson = favPayload.refJson,
+                            snapshotJson = favPayload.snapshotJson,
+                            metaJson = favPayload.metaJson,
+                            createdAt = favPayload.createdAt,
+                        )
+                    )
                 }
             }
 
             // 2.5 应用远端媒体生图会话 (Media Creations)
             pullResponse.media_creations.forEach { mediaDto ->
-                val sessionEntity = runCatching { json.decodeFromString<MediaCreationSessionEntity>(mediaDto.payload) }.getOrNull()
-                if (sessionEntity != null) {
-                    mediaCreationDAO.insertSession(sessionEntity)
+                val sessionPayload = runCatching { json.decodeFromString<MediaCreationSyncPayload>(mediaDto.payload) }.getOrNull()
+                if (sessionPayload != null) {
+                    mediaCreationDAO.insertSession(
+                        MediaCreationSessionEntity(
+                            id = sessionPayload.id,
+                            title = sessionPayload.title,
+                            draft = sessionPayload.draft,
+                            createAt = sessionPayload.createAt,
+                            updateAt = sessionPayload.updateAt,
+                        )
+                    )
                 }
             }
 
@@ -539,7 +612,7 @@ class IncrementalSyncEngine(
                     id = entity.id,
                     assistantId = entity.assistantId,
                     title = entity.title,
-                    payload = json.encodeToString(Conversation.serializer(), portableConv),
+                    payload = json.encodeToString(portableConv),
                     updateAt = entity.updateAt,
                     createAt = entity.createAt,
                     folderId = entity.folderId,
@@ -552,7 +625,7 @@ class IncrementalSyncEngine(
                 AssistantSyncDto(
                     id = asst.id.toString(),
                     name = asst.name,
-                    payload = json.encodeToString(Assistant.serializer(), asst),
+                    payload = json.encodeToString(asst),
                     updateAt = System.currentTimeMillis()
                 )
             }
@@ -562,7 +635,7 @@ class IncrementalSyncEngine(
                 ProviderSyncDto(
                     id = prov.id.toString(),
                     name = prov.name,
-                    payload = json.encodeToString(ProviderSetting.serializer(), prov),
+                    payload = json.encodeToString(prov),
                     updateAt = System.currentTimeMillis()
                 )
             }
@@ -573,7 +646,17 @@ class IncrementalSyncEngine(
                     id = fav.id,
                     refKey = fav.refKey,
                     type = fav.type,
-                    payload = json.encodeToString(FavoriteEntity.serializer(), fav),
+                    payload = json.encodeToString(
+                        FavoriteSyncPayload(
+                            id = fav.id,
+                            refKey = fav.refKey,
+                            type = fav.type,
+                            refJson = fav.refJson,
+                            snapshotJson = fav.snapshotJson,
+                            metaJson = fav.metaJson,
+                            createdAt = fav.createdAt,
+                        )
+                    ),
                     updateAt = fav.createdAt
                 )
             }
@@ -583,12 +666,20 @@ class IncrementalSyncEngine(
                 MediaCreationSyncDto(
                     id = session.id,
                     title = session.title,
-                    payload = json.encodeToString(MediaCreationSessionEntity.serializer(), session),
+                    payload = json.encodeToString(
+                        MediaCreationSyncPayload(
+                            id = session.id,
+                            title = session.title,
+                            draft = session.draft,
+                            createAt = session.createAt,
+                            updateAt = session.updateAt,
+                        )
+                    ),
                     updateAt = session.updateAt
                 )
             }
 
-            // 3.6 推送扩展设置
+            // 3.6 推送扩展设置与AI偏好
             val nowTime = System.currentTimeMillis()
             val pushExtraItems = listOf(
                 ExtraSettingsSyncDto("assistant_tags", json.encodeToString(currentSettings.assistantTags), nowTime),
@@ -601,6 +692,25 @@ class IncrementalSyncEngine(
                 ExtraSettingsSyncDto("asr_providers", json.encodeToString(currentSettings.asrProviders), nowTime),
                 ExtraSettingsSyncDto("search_services", json.encodeToString(currentSettings.searchServices), nowTime),
                 ExtraSettingsSyncDto("mcp_servers", json.encodeToString(currentSettings.mcpServers), nowTime),
+                ExtraSettingsSyncDto(
+                    "ai_preferences",
+                    json.encodeToString(
+                        AiPreferencesSyncDto(
+                            favoriteModels = currentSettings.favoriteModels.map { it.toString() },
+                            chatModelId = currentSettings.chatModelId.toString(),
+                            fastModelId = currentSettings.fastModelId.toString(),
+                            enableAutoTitle = currentSettings.enableAutoTitle,
+                            titlePrompt = currentSettings.titlePrompt,
+                            translatePrompt = currentSettings.translatePrompt,
+                            translateTargetLanguage = currentSettings.translateTargetLanguage,
+                            enableSuggestion = currentSettings.enableSuggestion,
+                            suggestionPrompt = currentSettings.suggestionPrompt,
+                            ocrPrompt = currentSettings.ocrPrompt,
+                            defaultTTSPlaybackSpeed = currentSettings.defaultTTSPlaybackSpeed,
+                        )
+                    ),
+                    nowTime
+                ),
             )
 
             // 3.7 文件夹与墓碑
@@ -635,12 +745,12 @@ class IncrementalSyncEngine(
             val pushHttpReq = Request.Builder()
                 .url(buildUrl(baseUrl, "api/sync/push"))
                 .addHeader("Authorization", "Bearer $token")
-                .post(json.encodeToString(PushRequestDto.serializer(), pushReq).toRequestBody(JSON_MEDIA_TYPE))
+                .post(json.encodeToString(pushReq).toRequestBody(JSON_MEDIA_TYPE))
                 .build()
 
             val pushResponse: PushResponseDto = okHttpClient.newCall(pushHttpReq).execute().use { resp ->
                 if (!resp.isSuccessful) error("Push 失败: HTTP ${resp.code}")
-                json.decodeFromString(PushResponseDto.serializer(), resp.body?.string().orEmpty())
+                json.decodeFromString(resp.body?.string().orEmpty())
             }
 
             // 4. 附件增量比对与传输阶段 (支持 upload/, media_creation/, skills/, fonts/ 全覆盖)
@@ -664,12 +774,12 @@ class IncrementalSyncEngine(
                     val checkHttpReq = Request.Builder()
                         .url(buildUrl(baseUrl, "api/sync/files/check"))
                         .addHeader("Authorization", "Bearer $token")
-                        .post(json.encodeToString(FilesCheckRequestDto.serializer(), checkReq).toRequestBody(JSON_MEDIA_TYPE))
+                        .post(json.encodeToString(checkReq).toRequestBody(JSON_MEDIA_TYPE))
                         .build()
 
                     val checkResp: FilesCheckResponseDto = okHttpClient.newCall(checkHttpReq).execute().use { resp ->
                         if (resp.isSuccessful) {
-                            json.decodeFromString(FilesCheckResponseDto.serializer(), resp.body?.string().orEmpty())
+                            json.decodeFromString(resp.body?.string().orEmpty())
                         } else FilesCheckResponseDto()
                     }
 
