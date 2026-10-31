@@ -535,6 +535,11 @@ class IncrementalSyncEngine(
                 if (syncV2Dao.getMetaValue(META_COVERAGE) != SyncSettingsContract.COVERAGE_VERSION) {
                     cursor = 0L
                     isReconciled = false
+                    // 197 会确认自己不认识的记忆实体却不保存正文。仅重置游标仍会因哈希相同跳过应用，
+                    // 随后的删除扫描还可能误删云端记忆；保留修订和待推队列，仅废弃这些未落地实体的哈希。
+                    syncV2Dao.getEntityStatesByType("memory_file").forEach { state ->
+                        syncV2Dao.upsertEntityState(state.copy(lastSyncedHash = ""))
+                    }
                 }
 
                 // Step 0a: 先尝试冲刷此前因流式生成而暂存的 sync_inbox_pending

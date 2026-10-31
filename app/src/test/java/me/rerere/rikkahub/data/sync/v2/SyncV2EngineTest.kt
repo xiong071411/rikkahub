@@ -496,7 +496,14 @@ class SyncV2EngineTest {
         syncV2Dao.upsertMeta(SyncMetaEntity("server_id", server.serverId))
         syncV2Dao.upsertMeta(SyncMetaEntity("cursor", server.currentRevision.toString()))
         syncV2Dao.upsertMeta(SyncMetaEntity("v2_reconciled", "1"))
+        syncV2Dao.upsertEntityState(SyncEntityStateEntity(
+            entityType = "memory_file", entityId = remote.entityId,
+            lastSyncedRevision = server.currentRevision,
+            lastSyncedHash = CanonicalSyncHash.computeSemanticHash("memory_file", JsonInstant.encodeToString(remote)),
+            deleted = false, updatedAt = 1,
+        ))
         engine.sync(defaultConfig).getOrThrow()
+        assertEquals("upsert", server.entities.getValue("memory_file" to remote.entityId).operation)
         assertEquals(remote.content, memoryRepository.getFile(remote.assistantId, remote.path)?.content)
         assertEquals(SyncSettingsContract.COVERAGE_VERSION, syncV2Dao.getMetaValue("sync_coverage_version"))
     }
