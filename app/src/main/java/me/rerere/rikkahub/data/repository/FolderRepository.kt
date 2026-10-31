@@ -6,6 +6,9 @@ import me.rerere.rikkahub.data.db.dao.ConversationDAO
 import me.rerere.rikkahub.data.db.dao.FolderDAO
 import me.rerere.rikkahub.data.db.entity.FolderEntity
 import me.rerere.rikkahub.data.model.Folder
+import me.rerere.rikkahub.data.sync.v2.FolderSyncV2Payload
+import me.rerere.rikkahub.data.sync.v2.SyncMutationRecorder
+import me.rerere.rikkahub.utils.JsonInstant
 import java.time.Instant
 import kotlin.uuid.Uuid
 
@@ -13,7 +16,16 @@ class FolderRepository(
     private val folderDAO: FolderDAO,
     private val conversationDAO: ConversationDAO,
     private val syncTombstoneManager: me.rerere.rikkahub.data.sync.engine.SyncTombstoneManager,
+    private val syncMutationRecorder: SyncMutationRecorder? = null,
 ) {
+    private suspend fun recordFolderUpsert(entity: FolderEntity) {
+        syncMutationRecorder?.recordUpsert(
+            entityType = "folder",
+            entityId = entity.id,
+            rawPayloadJson = JsonInstant.encodeToString(FolderSyncV2Payload.fromEntity(entity)),
+        )
+    }
+
     fun getFoldersOfAssistant(assistantId: Uuid): Flow<List<Folder>> {
         return folderDAO.getFoldersOfAssistant(assistantId.toString())
             .map { list -> list.map { it.toFolder() } }
@@ -29,13 +41,16 @@ class FolderRepository(
             name = name,
             createAt = Instant.now(),
         )
-        folderDAO.insert(folder.toEntity())
+        val entity = folder.toEntity()
+        folderDAO.insert(entity)
         syncTombstoneManager.removeTombstone(folder.id.toString())
+        recordFolderUpsert(entity)
         return folder
     }
 
     suspend fun renameFolder(id: Uuid, name: String) {
         folderDAO.rename(id.toString(), name)
+        folderDAO.getFolderById(id.toString())?.let { recordFolderUpsert(it) }
     }
 
     /**
@@ -45,6 +60,7 @@ class FolderRepository(
         conversationDAO.clearFolder(id.toString())
         folderDAO.deleteById(id.toString())
         syncTombstoneManager.recordTombstone(id.toString(), "folder")
+        syncMutationRecorder?.recordDelete("folder", id.toString())
     }
 }
 

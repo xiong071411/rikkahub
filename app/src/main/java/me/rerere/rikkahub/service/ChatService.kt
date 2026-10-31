@@ -77,6 +77,7 @@ import me.rerere.rikkahub.data.model.withoutConversationFields
 import me.rerere.rikkahub.data.model.withoutUnresumableToolCalls
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
+import me.rerere.rikkahub.data.sync.v2.RemoteSyncApplyContext
 import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.NotFoundException
 import java.net.ConnectException
@@ -1100,6 +1101,62 @@ class ChatService(
         val session = sessionManager.getOrCreate(conversation.id)
         session.replace(conversation, existsInDatabase = true) {
             conversationStore.write(previous = null, current = conversation)
+        }
+        sessionManager.removeIfIdle(session)
+    }
+
+    // ---- Sync V2 远端同步协调接口 ----
+
+    /**
+     * 检查目标会话当前是否正在流式生成或有排队发送中的消息。
+     * Sync V2 在拉取到此会话的新修订时，若返回 true，会先暂存至 sync_inbox_pending，绝不打断本地生成。
+     */
+    fun isConversationBusyForSync(conversationId: Uuid): Boolean {
+        val session = sessionManager.get(conversationId) ?: return false
+        return session.isGenerating ||
+            session.submittingMessage != null ||
+            session.messageQueue.state.value.messages.isNotEmpty()
+    }
+
+    /**
+     * 由 Sync V2 引擎在确认会话非生成态时调用，通过 ConversationSession 单一事实源安全应用远端会话，
+     * 并在 [RemoteSyncApplyContext] 下落库，避免把云端下发的变更重复记入本地待推送队列。
+     */
+    suspend fun applyRemoteSyncedConversation(conversation: Conversation) = withContext(RemoteSyncApplyContext) {
+        val activeSession = sessionManager.get(conversation.id)
+        if (activeSession == null) {
+            if (conversationRepo.existsConversationById(conversation.id)) {
+                conversationRepo.updateConversation(conversation)
+            } else {
+                conversationRepo.insertConversation(conversation)
+            }
+            // 若写库期间界面恰好打开了该会话，补做一次内存替换以保持一致
+            val raceSession = sessionManager.get(conversation.id)
+            if (raceSession != null) {
+                raceSession.replace(conversation, existsInDatabase = true) {}
+                sessionManager.removeIfIdle(raceSession)
+            }
+            return@withContext
+        }
+        activeSession.replace(conversation, existsInDatabase = true) {
+            if (conversationRepo.existsConversationById(conversation.id)) {
+                conversationRepo.updateConversation(conversation)
+            } else {
+                conversationRepo.insertConversation(conversation)
+            }
+        }
+        sessionManager.removeIfIdle(activeSession)
+    }
+
+    /**
+     * 由 Sync V2 引擎应用来自云端的会话删除墓碑：清理内存会话状态并删库，防止空闲回收时复活已删会话。
+     */
+    suspend fun applyRemoteDeletedConversation(conversationId: Uuid) = withContext(RemoteSyncApplyContext) {
+        val session = sessionManager.getOrCreate(conversationId)
+        discardQueuedMessages(session)
+        session.replace(newConversation(conversationId), existsInDatabase = false) { previous ->
+            conversationRepo.getConversationById(conversationId)?.let { conversationRepo.deleteConversation(it) }
+            previous?.let { filesManager.deleteChatFiles(it.files) }
         }
         sessionManager.removeIfIdle(session)
     }

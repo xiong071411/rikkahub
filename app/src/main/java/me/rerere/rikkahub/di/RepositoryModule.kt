@@ -24,11 +24,11 @@ import java.io.File
 
 val repositoryModule = module {
     single {
-        ConversationRepository(get(), get(), get(), get(), get(), get(), get())
+        ConversationRepository(get(), get(), get(), get(), get(), get(), get(), get())
     }
 
     single {
-        FolderRepository(get(), get(), get())
+        FolderRepository(get(), get(), get(), get())
     }
 
     single {
@@ -44,7 +44,13 @@ val repositoryModule = module {
     }
 
     single {
-        MediaCreationRepository(context = get(), database = get(), dao = get(), json = get())
+        MediaCreationRepository(
+            context = get(),
+            database = get(),
+            dao = get(),
+            json = get(),
+            syncMutationRecorder = get(),
+        )
     }
 
     single {
@@ -52,7 +58,7 @@ val repositoryModule = module {
     }
 
     single {
-        FavoriteRepository(get())
+        FavoriteRepository(get(), get())
     }
 
     single {

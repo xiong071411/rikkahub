@@ -130,6 +130,18 @@ val dataSourceModule = module {
     }
 
     single {
+        get<AppDatabase>().syncV2Dao()
+    }
+
+    single {
+        me.rerere.rikkahub.data.sync.v2.SyncMutationRecorder(
+            database = get(),
+            syncV2Dao = get(),
+            filesDirProvider = { get<Context>().filesDir },
+        )
+    }
+
+    single {
         UsageRecorder(dao = get(), scope = get<AppScope>())
     }
 
@@ -235,6 +247,10 @@ val dataSourceModule = module {
             .addInterceptor(AIRequestInterceptor())
             .addInterceptor(HttpLoggingInterceptor().apply {
                 redactHeader("Proxy-Authorization")
+                redactHeader("Authorization")
+                redactHeader("x-api-key")
+                redactHeader("x-goog-api-key")
+                redactHeader("Cookie")
                 level = HttpLoggingInterceptor.Level.HEADERS
             })
             .build()
@@ -293,6 +309,9 @@ val dataSourceModule = module {
     single {
         me.rerere.rikkahub.data.sync.engine.IncrementalSyncEngine(
             context = get(),
+            database = get(),
+            syncV2Dao = get(),
+            syncMutationRecorder = get(),
             settingsStore = get(),
             conversationRepository = get(),
             folderRepository = get(),
@@ -303,6 +322,7 @@ val dataSourceModule = module {
             mediaCreationDAO = get(),
             syncTombstoneManager = get(),
             okHttpClient = get(),
+            lazyChatService = lazy { get() },
         )
     }
 

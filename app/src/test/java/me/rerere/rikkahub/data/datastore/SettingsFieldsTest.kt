@@ -164,6 +164,13 @@ private val SAMPLE = Settings(
     webServerAccessPassword = "secret",
     webServerLocalhostOnly = true,
     backupReminderConfig = BackupReminderConfig(enabled = true),
+    syncServerConfig = SyncServerConfig(
+        serverUrl = "https://sync.example.com",
+        authToken = "token-sample",
+        syncFiles = false,
+        lastSyncTime = 42L,
+        deviceName = "SamplePhone",
+    ),
     sponsorAlertDismissedAt = 7,
 )
 
@@ -217,5 +224,6 @@ private val STORED_KEYS = setOf(
     "lorebooks",
     "quick_messages",
     "backup_reminder_config",
+    "sync_server_config",
     "sponsor_alert_dismissed_at",
 )

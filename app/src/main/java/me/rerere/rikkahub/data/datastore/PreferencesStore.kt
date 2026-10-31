@@ -177,6 +177,9 @@ class SettingsStore internal constructor(
         // 备份提醒
         val BACKUP_REMINDER_CONFIG = stringPreferencesKey("backup_reminder_config")
 
+        // 自建增量同步服务器配置（修复重启丢失配置问题）
+        val SYNC_SERVER_CONFIG = stringPreferencesKey("sync_server_config")
+
         // 统计
         val LAUNCH_COUNT = intPreferencesKey("launch_count")
 

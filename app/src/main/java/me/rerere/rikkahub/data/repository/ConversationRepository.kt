@@ -24,6 +24,9 @@ import me.rerere.rikkahub.data.db.fts.MessageSearchSort
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.rikkahub.data.sync.v2.AttachmentPathNormalizer.toPortableAttachmentPaths
+import me.rerere.rikkahub.data.sync.v2.SyncMutationRecorder
+import me.rerere.rikkahub.data.sync.v2.isApplyingRemoteSync
 import me.rerere.rikkahub.utils.JsonInstant
 import java.time.Instant
 import kotlin.uuid.Uuid
@@ -36,6 +39,7 @@ class ConversationRepository(
     private val filesManager: FilesManager,
     private val messageFtsManager: MessageFtsManager,
     private val syncTombstoneManager: me.rerere.rikkahub.data.sync.engine.SyncTombstoneManager,
+    private val syncMutationRecorder: SyncMutationRecorder? = null,
 ) {
     companion object {
         private const val PAGE_SIZE = 20
@@ -316,6 +320,22 @@ class ConversationRepository(
         }.toMap()
     }
 
+    private suspend fun recordConversationUpsert(conversation: Conversation) {
+        if (syncMutationRecorder == null || isApplyingRemoteSync()) return
+        val portable = conversation.toPortableAttachmentPaths()
+        syncMutationRecorder.recordUpsert(
+            entityType = "conversation",
+            entityId = conversation.id.toString(),
+            rawPayloadJson = JsonInstant.encodeToString(portable),
+        )
+    }
+
+    private suspend fun recordConversationColumnChange(conversationId: Uuid) {
+        if (syncMutationRecorder == null || isApplyingRemoteSync()) return
+        val latest = getConversationById(conversationId) ?: return
+        recordConversationUpsert(latest)
+    }
+
     suspend fun insertConversation(conversation: Conversation) {
         database.withTransaction {
             conversationDAO.insert(
@@ -325,6 +345,7 @@ class ConversationRepository(
             syncTombstoneManager.removeTombstone(conversation.id.toString())
         }
         messageFtsManager.indexConversation(conversation)
+        recordConversationUpsert(conversation)
     }
 
     suspend fun updateConversation(conversation: Conversation) {
@@ -337,6 +358,7 @@ class ConversationRepository(
             saveMessageNodes(conversation.id.toString(), conversation.messageNodes)
         }
         messageFtsManager.indexConversation(conversation)
+        recordConversationUpsert(conversation)
     }
 
     suspend fun deleteConversation(conversation: Conversation) {
@@ -355,6 +377,7 @@ class ConversationRepository(
             syncTombstoneManager.recordTombstone(conversation.id.toString(), "conversation")
         }
         filesManager.deleteChatFiles(fullConversation.files)
+        syncMutationRecorder?.recordDelete("conversation", conversation.id.toString())
     }
 
     suspend fun searchMessages(
@@ -437,10 +460,12 @@ class ConversationRepository(
             id = conversationId.toString(),
             isPinned = isPinned,
         )
+        recordConversationColumnChange(conversationId)
     }
 
     suspend fun updateConversationAssistant(conversationId: Uuid, assistantId: Uuid) {
         conversationDAO.updateAssistantId(conversationId.toString(), assistantId.toString())
+        recordConversationColumnChange(conversationId)
     }
 
     /**
@@ -454,14 +479,17 @@ class ConversationRepository(
             lorebookIds = JsonInstant.encodeToString(conversation.lorebookIds),
             workspaceCwd = conversation.workspaceCwd ?: "",
         )
+        recordConversationColumnChange(conversation.id)
     }
 
     suspend fun updateTitle(conversationId: Uuid, title: String) {
         conversationDAO.updateTitle(conversationId.toString(), title)
+        recordConversationColumnChange(conversationId)
     }
 
     suspend fun updateCustomSystemPrompt(conversationId: Uuid, customSystemPrompt: String?) {
         conversationDAO.updateCustomSystemPrompt(conversationId.toString(), customSystemPrompt ?: "")
+        recordConversationColumnChange(conversationId)
     }
 
     suspend fun updateChatSuggestions(conversationId: Uuid, chatSuggestions: List<String>) {
@@ -469,6 +497,7 @@ class ConversationRepository(
             id = conversationId.toString(),
             chatSuggestions = JsonInstant.encodeToString(chatSuggestions),
         )
+        recordConversationColumnChange(conversationId)
     }
 
     /**
@@ -479,6 +508,7 @@ class ConversationRepository(
             id = conversationId.toString(),
             folderId = folderId?.toString() ?: ""
         )
+        recordConversationColumnChange(conversationId)
     }
 
     private fun conversationSummaryToConversation(entity: LightConversationEntity): Conversation {

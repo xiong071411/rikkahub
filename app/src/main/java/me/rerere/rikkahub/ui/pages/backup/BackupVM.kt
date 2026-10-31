@@ -13,9 +13,12 @@ import kotlinx.coroutines.withContext
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.WebDavConfig
+import me.rerere.rikkahub.data.db.entity.SyncConflictEntity
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.saveUploadFromBytes
+import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.data.sync.engine.SyncV2InfoResponseDto
 import me.rerere.rikkahub.data.sync.importer.ChatboxImporter
 import me.rerere.rikkahub.data.sync.importer.CherryStudioProviderImporter
 import me.rerere.rikkahub.data.sync.webdav.WebDavBackupItem
@@ -43,6 +46,19 @@ class BackupVM(
 
     val isSyncing = MutableStateFlow(false)
     val syncStatusMessage = MutableStateFlow("")
+
+    // 按需订阅（WhileSubscribed）：离开同步设置页 5 秒后自动解绑 Room 查询，降低手表与手机待机功耗
+    val unresolvedSyncConflicts = incrementalSyncEngine.observeUnresolvedConflicts()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val pendingSyncFileCount = incrementalSyncEngine.observePendingFileCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    val outboxSyncCount = incrementalSyncEngine.observeOutboxCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    val currentSyncRevision = incrementalSyncEngine.observeCurrentRevision()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
 
     val webDavBackupItems = MutableStateFlow<UiState<List<WebDavBackupItem>>>(UiState.Idle)
     val s3BackupItems = MutableStateFlow<UiState<List<S3BackupItem>>>(UiState.Idle)
@@ -80,8 +96,8 @@ class BackupVM(
         }
     }
 
-    suspend fun testSyncServer() {
-        incrementalSyncEngine.testConnection(settings.value.syncServerConfig).getOrThrow()
+    suspend fun testSyncServer(): SyncV2InfoResponseDto {
+        return incrementalSyncEngine.testConnection(settings.value.syncServerConfig).getOrThrow()
     }
 
     suspend fun startIncrementalSync(): me.rerere.rikkahub.data.sync.engine.SyncSummary {
@@ -94,6 +110,27 @@ class BackupVM(
         } finally {
             isSyncing.value = false
         }
+    }
+
+    suspend fun forkConflictConversation(conflict: SyncConflictEntity): Conversation {
+        return incrementalSyncEngine.resolveConflictForkConversation(
+            conflictId = conflict.id,
+            config = settings.value.syncServerConfig,
+        ).getOrThrow()
+    }
+
+    suspend fun applyConflictLocalCopy(conflict: SyncConflictEntity) {
+        incrementalSyncEngine.resolveConflictApplyLocal(
+            conflictId = conflict.id,
+            config = settings.value.syncServerConfig,
+        ).getOrThrow()
+    }
+
+    suspend fun dismissConflict(conflict: SyncConflictEntity) {
+        incrementalSyncEngine.resolveConflictDismiss(
+            conflictId = conflict.id,
+            config = settings.value.syncServerConfig,
+        ).getOrThrow()
     }
 
     suspend fun testWebDav() {

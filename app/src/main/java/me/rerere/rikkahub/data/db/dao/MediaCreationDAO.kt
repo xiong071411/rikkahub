@@ -5,6 +5,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.Query
 import androidx.room.Update
+import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 import me.rerere.rikkahub.data.db.entity.MediaCreationNodeEntity
 import me.rerere.rikkahub.data.db.entity.MediaCreationRecordEntity
@@ -54,7 +55,10 @@ interface MediaCreationDAO {
     )
     suspend fun getEmptySession(): MediaCreationSessionEntity?
 
-    @Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE)
+    // 关键修复：严禁在此处使用 OnConflictStrategy.REPLACE！
+    // SQLite 的 INSERT OR REPLACE 会先 DELETE 父行再 INSERT，触发 ON DELETE CASCADE 导致关联的 node 和 record 全军覆没。
+    // 改用 @Upsert（底层生成 INSERT ... ON CONFLICT DO UPDATE），实现无损幂等写入。
+    @Upsert
     suspend fun insertSession(session: MediaCreationSessionEntity)
 
     @Query("SELECT * FROM media_creation_session")
@@ -114,8 +118,14 @@ interface MediaCreationDAO {
     @Query("SELECT * FROM media_creation_node WHERE id = :id")
     suspend fun getNode(id: String): MediaCreationNodeEntity?
 
+    @Query("SELECT * FROM media_creation_node")
+    suspend fun getAllNodes(): List<MediaCreationNodeEntity>
+
     @Insert
     suspend fun insertNode(node: MediaCreationNodeEntity)
+
+    @Upsert
+    suspend fun upsertNode(node: MediaCreationNodeEntity)
 
     @Query("UPDATE media_creation_node SET selected_record_id = :recordId WHERE id = :id")
     suspend fun selectRecord(id: String, recordId: String)
@@ -129,6 +139,9 @@ interface MediaCreationDAO {
 
     @Query("SELECT * FROM media_creation_record WHERE id = :id")
     suspend fun getRecord(id: String): MediaCreationRecordEntity?
+
+    @Query("SELECT * FROM media_creation_record")
+    suspend fun getAllRecords(): List<MediaCreationRecordEntity>
 
     @Query("SELECT * FROM media_creation_record WHERE session_id = :sessionId")
     suspend fun getRecordsOfSession(sessionId: String): List<MediaCreationRecordEntity>
@@ -144,6 +157,9 @@ interface MediaCreationDAO {
 
     @Insert
     suspend fun insertRecord(record: MediaCreationRecordEntity)
+
+    @Upsert
+    suspend fun upsertRecord(record: MediaCreationRecordEntity)
 
     @Update
     suspend fun updateRecord(record: MediaCreationRecordEntity)

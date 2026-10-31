@@ -25,6 +25,10 @@ import me.rerere.rikkahub.data.model.MediaCreationParams
 import me.rerere.rikkahub.data.model.MediaCreationRecord
 import me.rerere.rikkahub.data.model.MediaCreationSession
 import me.rerere.rikkahub.data.model.MediaCreationStatus
+import me.rerere.rikkahub.data.sync.v2.MediaNodeSyncV2Payload
+import me.rerere.rikkahub.data.sync.v2.MediaRecordSyncV2Payload
+import me.rerere.rikkahub.data.sync.v2.MediaSessionSyncV2Payload
+import me.rerere.rikkahub.data.sync.v2.SyncMutationRecorder
 import java.io.File
 import java.time.Instant
 import kotlin.uuid.Uuid
@@ -42,8 +46,33 @@ class MediaCreationRepository(
     private val database: AppDatabase,
     private val dao: MediaCreationDAO,
     private val json: Json,
+    private val syncMutationRecorder: SyncMutationRecorder? = null,
 ) {
     private val activeStatuses = MediaCreationStatus.ACTIVE.map { it.name }
+
+    private suspend fun recordSessionUpsert(entity: MediaCreationSessionEntity) {
+        syncMutationRecorder?.recordUpsert(
+            entityType = "media_session",
+            entityId = entity.id,
+            rawPayloadJson = json.encodeToString(MediaSessionSyncV2Payload.fromEntity(entity)),
+        )
+    }
+
+    private suspend fun recordNodeUpsert(entity: MediaCreationNodeEntity) {
+        syncMutationRecorder?.recordUpsert(
+            entityType = "media_node",
+            entityId = entity.id,
+            rawPayloadJson = json.encodeToString(MediaNodeSyncV2Payload.fromEntity(entity)),
+        )
+    }
+
+    private suspend fun recordRecordUpsert(entity: MediaCreationRecordEntity) {
+        syncMutationRecorder?.recordUpsert(
+            entityType = "media_record",
+            entityId = entity.id,
+            rawPayloadJson = json.encodeToString(MediaRecordSyncV2Payload.fromEntity(entity)),
+        )
+    }
 
     // ---- 文件 ----
 
@@ -84,7 +113,9 @@ class MediaCreationRepository(
      */
     suspend fun getOrCreateEmptySession(draft: MediaCreationDraft): MediaCreationSession = database.withTransaction {
         dao.getEmptySession()?.toSession() ?: MediaCreationSession(draft = draft).also {
-            dao.insertSession(it.toEntity())
+            val entity = it.toEntity()
+            dao.insertSession(entity)
+            recordSessionUpsert(entity)
         }
     }
 
@@ -92,20 +123,34 @@ class MediaCreationRepository(
     suspend fun newSession(): MediaCreationSession =
         getOrCreateEmptySession(MediaCreationDraft(modelId = getLatestSession()?.draft?.modelId))
 
-    suspend fun renameSession(id: Uuid, title: String) = dao.renameSession(id.toString(), title)
+    suspend fun renameSession(id: Uuid, title: String) {
+        dao.renameSession(id.toString(), title)
+        dao.getSession(id.toString())?.let { recordSessionUpsert(it) }
+    }
 
-    suspend fun saveDraft(id: Uuid, draft: MediaCreationDraft) =
+    suspend fun saveDraft(id: Uuid, draft: MediaCreationDraft) {
         dao.updateDraft(id.toString(), json.encodeToString(draft))
+        dao.getSession(id.toString())?.let { recordSessionUpsert(it) }
+    }
 
     suspend fun updateSession(id: Uuid, transform: (MediaCreationSession) -> MediaCreationSession) {
+        var updatedEntity: MediaCreationSessionEntity? = null
         database.withTransaction {
             val session = dao.getSession(id.toString())?.toSession() ?: return@withTransaction
-            dao.updateSession(transform(session).toEntity())
+            val next = transform(session).toEntity()
+            dao.updateSession(next)
+            updatedEntity = next
         }
+        updatedEntity?.let { recordSessionUpsert(it) }
     }
 
     suspend fun deleteSession(id: Uuid) {
+        val childRecords = dao.getRecordsOfSession(id.toString())
+        val childNodeIds = childRecords.map { it.nodeId }.distinct()
         dao.deleteSession(id.toString())
+        childRecords.forEach { syncMutationRecorder?.recordDelete("media_record", it.id) }
+        childNodeIds.forEach { syncMutationRecorder?.recordDelete("media_node", it) }
+        syncMutationRecorder?.recordDelete("media_session", id.toString())
         withContext(Dispatchers.IO) { sessionDir(id).deleteRecursively() }
     }
 
@@ -138,17 +183,24 @@ class MediaCreationRepository(
         // 版本随这一项级联删除，目录要自己清理
         val versions = getVersionIds(nodeId)
         dao.deleteNode(nodeId.toString())
+        versions.forEach { syncMutationRecorder?.recordDelete("media_record", it.toString()) }
+        syncMutationRecorder?.recordDelete("media_node", nodeId.toString())
         withContext(Dispatchers.IO) { versions.forEach { recordDir(sessionId, it).deleteRecursively() } }
     }
 
     /**
      * 让一项改为显示相邻的版本，[offset] 为 -1 是上一个、1 是下一个；已经到头时不变。
      */
-    suspend fun switchVersion(nodeId: Uuid, offset: Int) = database.withTransaction {
-        val node = dao.getNode(nodeId.toString()) ?: return@withTransaction
-        val versions = dao.getVersionIds(node.id)
-        val target = versions.getOrNull(versions.indexOf(node.selectedRecordId) + offset) ?: return@withTransaction
-        dao.selectRecord(node.id, target)
+    suspend fun switchVersion(nodeId: Uuid, offset: Int) {
+        var updatedNode: MediaCreationNodeEntity? = null
+        database.withTransaction {
+            val node = dao.getNode(nodeId.toString()) ?: return@withTransaction
+            val versions = dao.getVersionIds(node.id)
+            val target = versions.getOrNull(versions.indexOf(node.selectedRecordId) + offset) ?: return@withTransaction
+            dao.selectRecord(node.id, target)
+            updatedNode = node.copy(selectedRecordId = target)
+        }
+        updatedNode?.let { recordNodeUpsert(it) }
     }
 
     // ---- 记录 ----
@@ -173,22 +225,29 @@ class MediaCreationRepository(
      * 把 [record] 写进时间线并选中它：[MediaCreationRecord.nodeId] 对应的项已经存在时成为它的新版本，
      * 否则在时间线末尾另起一项。
      */
-    suspend fun insertRecord(record: MediaCreationRecord) = database.withTransaction {
+    suspend fun insertRecord(record: MediaCreationRecord) {
         val entity = record.toEntity()
-        if (dao.getNode(entity.nodeId) == null) {
-            dao.insertNode(
-                MediaCreationNodeEntity(
+        var syncedNode: MediaCreationNodeEntity? = null
+        database.withTransaction {
+            val existingNode = dao.getNode(entity.nodeId)
+            if (existingNode == null) {
+                val newNode = MediaCreationNodeEntity(
                     id = entity.nodeId,
                     sessionId = entity.sessionId,
                     selectedRecordId = entity.id,
                     createAt = entity.createAt,
                 )
-            )
-            dao.insertRecord(entity)
-        } else {
-            dao.insertRecord(entity)
-            dao.selectRecord(entity.nodeId, entity.id)
+                dao.insertNode(newNode)
+                dao.insertRecord(entity)
+                syncedNode = newNode
+            } else {
+                dao.insertRecord(entity)
+                dao.selectRecord(entity.nodeId, entity.id)
+                syncedNode = existingNode.copy(selectedRecordId = entity.id)
+            }
         }
+        syncedNode?.let { recordNodeUpsert(it) }
+        recordRecordUpsert(entity)
     }
 
     /**
@@ -197,11 +256,20 @@ class MediaCreationRepository(
     suspend fun updateRecord(
         id: Uuid,
         transform: (MediaCreationRecord) -> MediaCreationRecord,
-    ): MediaCreationRecord? = database.withTransaction {
-        val current = dao.getRecord(id.toString())?.toRecord() ?: return@withTransaction null
-        val updated = transform(current)
-        if (updated != current) dao.updateRecord(updated.copy(updateAt = Instant.now()).toEntity())
-        updated
+    ): MediaCreationRecord? {
+        var persistedEntity: MediaCreationRecordEntity? = null
+        val result = database.withTransaction {
+            val current = dao.getRecord(id.toString())?.toRecord() ?: return@withTransaction null
+            val updated = transform(current)
+            if (updated != current) {
+                val nextEntity = updated.copy(updateAt = Instant.now()).toEntity()
+                dao.updateRecord(nextEntity)
+                persistedEntity = nextEntity
+            }
+            updated
+        }
+        persistedEntity?.let { recordRecordUpsert(it) }
+        return result
     }
 
     /**
@@ -209,6 +277,8 @@ class MediaCreationRepository(
      * 改为显示它前面的那个，没有的话显示后面的。
      */
     suspend fun deleteRecord(record: MediaCreationRecord) {
+        var nodeDeleted = false
+        var updatedNode: MediaCreationNodeEntity? = null
         database.withTransaction {
             val id = record.id.toString()
             val nodeId = record.nodeId.toString()
@@ -217,10 +287,22 @@ class MediaCreationRepository(
             val node = dao.getNode(nodeId) ?: return@withTransaction
             val remaining = versions - id
             when {
-                remaining.isEmpty() -> dao.deleteNode(nodeId)
-                node.selectedRecordId == id ->
-                    dao.selectRecord(nodeId, remaining[(versions.indexOf(id) - 1).coerceIn(remaining.indices)])
+                remaining.isEmpty() -> {
+                    dao.deleteNode(nodeId)
+                    nodeDeleted = true
+                }
+                node.selectedRecordId == id -> {
+                    val newSelected = remaining[(versions.indexOf(id) - 1).coerceIn(remaining.indices)]
+                    dao.selectRecord(nodeId, newSelected)
+                    updatedNode = node.copy(selectedRecordId = newSelected)
+                }
             }
+        }
+        syncMutationRecorder?.recordDelete("media_record", record.id.toString())
+        if (nodeDeleted) {
+            syncMutationRecorder?.recordDelete("media_node", record.nodeId.toString())
+        } else {
+            updatedNode?.let { recordNodeUpsert(it) }
         }
         withContext(Dispatchers.IO) { recordDir(record.sessionId, record.id).deleteRecursively() }
     }
