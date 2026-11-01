@@ -189,7 +189,7 @@ class SyncCoverageStoreTest {
                                 db.execSQL(
                                     entity.getValue("createSql").jsonPrimitive.content.replace("\${TABLE_NAME}", table)
                                 )
-                                entity.getValue("indices").jsonArray.forEach {
+                                entity["indices"]?.jsonArray?.forEach {
                                     db.execSQL(
                                         it.jsonObject.getValue(
                                             "createSql"
