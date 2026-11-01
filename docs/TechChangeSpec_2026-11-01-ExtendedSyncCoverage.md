@@ -23,3 +23,11 @@ Updates:
 - Sync workspaces and SSH credentials
 - Sync skills, assets and history
 - Fix missing assets and sync conflicts
+
+## 验证与发布结果
+
+- GitHub CI [41297617521](https://github.com/xiong071411/rikkahub/actions/runs/41297617521) 成功，构建源提交 `3b2f2a0ba85db16d20f9e62dab01eb25953a4002`；客户端及 AI 模块定点测试共 85 项通过，无失败或跳过。包含独立设备 Room 数据库测试、33→34 历史数据迁移、SSH 凭据重加密、完整技能与资源恢复、删除保护、下载期间编辑、冲突副本恢复及等待会话落地的记忆进度。
+- CI 导出的第 34 版数据库结构与仓库文件一致，未在本机运行 Gradle。后端全套 56 项测试通过，在线能力接口确认支持 19 类实体，部署前后原有表数量和服务器标识一致，保留原有 452 个会话。
+- 3.1.8 / Build 202 的九个 APK 已发布至本机门户 http://45.207.200.189:8088/ 。逐个通过公网完整下载，核对 SHA-256、版本、包名、签名、ARM 架构、功能标记、原生库和同变体 DEX 一致性；13 个常用下载别名同样通过校验。
+- 门户更新前后 TClock 区域和历史归档逐字一致。门户备份位于 `/root/rikkahub-release-audit/build202-portal-backup`，后端数据库备份位于 `/root/rikkahub-release-audit/build202-backend`；公开下载审计记录为 `/root/rikkahub-release-audit/build202-public-verification.json`，测试与混淆映射产物保存在 `/root/rikkahub-release-audit/build202-ci`。
+- 本次完成自动化双设备数据测试与公开分发验证，尚未在两台真实设备上进行安装和同步验收。建议先在数据完整的设备安装新版并同步，再更新其他设备。
