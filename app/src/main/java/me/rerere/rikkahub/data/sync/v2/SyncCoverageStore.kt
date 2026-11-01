@@ -54,6 +54,17 @@ class SyncCoverageStore(
     private val fingerprints = HashMap<String, Fingerprint>()
 
     override suspend fun snapshot(): Map<Pair<String, String>, String> = buildMap {
+        // 会话可能因正在生成而延迟落地；先重试进度，未匹配的负载继续进入快照，不能误发删除。
+        dao.resources().filter { it.entityType == "memory_progress" && !it.deleted && it.materializedHash.isEmpty() }
+            .forEach { pending ->
+                if (applyMemoryProgress(json.decodeFromString(pending.payload))) {
+                    dao.putResource(
+                        pending.copy(
+                            materializedHash = CanonicalSyncHash.computeSemanticHash("memory_progress", pending.payload)
+                        )
+                    )
+                }
+            }
         db.workspaceDao().getAll().forEach { entity ->
             put("workspace" to entity.id, json.encodeToString(WorkspaceSyncPayload.fromEntity(entity, decrypt)))
         }
@@ -240,14 +251,13 @@ class SyncCoverageStore(
             "memory_progress" -> {
                 val value = json.decodeFromString<MemoryProgressSyncPayload>(payload)
                 require(value.conversationId == id)
-                val currentBranch = branchIds(id)
-                if (db.conversationDao().existsById(id) && value.branchIds.isNotEmpty() &&
-                    currentBranch.take(value.branchIds.size) == value.branchIds) {
-                    val previous = db.memoryConsolidationDao().getConsolidatedAt(id) ?: 0L
-                    db.memoryConsolidationDao().upsert(
-                        MemoryConsolidationEntity(id, maxOf(previous, value.consolidatedAt))
-                    )
-                }
+                val applied = applyMemoryProgress(value)
+                dao.putResource(SyncResourceEntity(
+                    type,
+                    id,
+                    payload,
+                    materializedHash = if (applied) CanonicalSyncHash.computeSemanticHash(type, payload) else ""
+                ))
             }
             "ui_preference" -> {
                 val kind = ExtendedSyncTypes.sharedPreferenceKeys[id] ?: error("未知的共享偏好")
@@ -300,7 +310,10 @@ class SyncCoverageStore(
                     it.relativePath
                 ) == id
             }?.let { db.managedFileDao().deleteById(it.id) }
-            "memory_progress" -> dao.deleteMemoryProgress(id)
+            "memory_progress" -> {
+                dao.deleteMemoryProgress(id)
+                dao.resource(type, id)?.let { dao.putResource(it.copy(deleted = true)) }
+            }
             "ui_preference" -> {
                 require(id in ExtendedSyncTypes.sharedPreferenceKeys)
                 preferences.edit(commit = true) { remove(id) }
@@ -382,7 +395,12 @@ class SyncCoverageStore(
     }
 
     override suspend fun materializeResources() {
-        for (resource in dao.resources().filter { !it.deleted }) {
+        for (resource in dao.resources().filter {
+            !it.deleted && it.entityType in setOf(
+                "file_asset",
+                "skill_bundle"
+            )
+        }) {
             val hash = CanonicalSyncHash.computeSemanticHash(resource.entityType, resource.payload)
             if (db.syncV2Dao().getOutboxEntry(resource.entityType, resource.entityId) != null) continue
             if (resource.entityType == "file_asset") {
@@ -428,6 +446,23 @@ class SyncCoverageStore(
             }
             dao.putResource(resource.copy(materializedHash = hash))
         }
+    }
+
+    private suspend fun applyMemoryProgress(value: MemoryProgressSyncPayload): Boolean {
+        require(
+            value.consolidatedAt >= 0 &&
+                value.branchHash == CanonicalSyncHash.sha256Hex(value.branchIds.joinToString("\n"))
+        )
+        val currentBranch = branchIds(value.conversationId)
+        if (!db.conversationDao().existsById(value.conversationId) || value.branchIds.isEmpty() ||
+            currentBranch.take(value.branchIds.size) != value.branchIds) {
+            return false
+        }
+        val previous = db.memoryConsolidationDao().getConsolidatedAt(value.conversationId) ?: 0L
+        db.memoryConsolidationDao().upsert(
+            MemoryConsolidationEntity(value.conversationId, maxOf(previous, value.consolidatedAt))
+        )
+        return true
     }
 
     private fun verifiedBlob(file: SyncBlobFile): Boolean {

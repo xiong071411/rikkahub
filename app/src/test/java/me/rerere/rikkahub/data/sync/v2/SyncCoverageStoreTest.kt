@@ -12,7 +12,11 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import me.rerere.ai.core.MessageRole
+import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.db.entity.ConversationEntity
+import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.db.entity.UsageRecordEntity
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.db.migrations.Migration_33_34
@@ -260,5 +264,28 @@ class SyncCoverageStoreTest {
         File(sourceFiles, "sync_blobs").copyRecursively(File(targetFiles, "sync_blobs"), overwrite = true)
         target.materializeResources()
         assertEquals("chosen conflict", File(targetFiles, "upload/data.txt").readText())
+    }
+
+    @Test
+    fun `memory progress waits for a deferred conversation instead of becoming a local deletion`() = runBlocking {
+        val (_, db, store) = device("device")
+        val id = Uuid.random().toString()
+        val nodeId = Uuid.random().toString()
+        val message = UIMessage(role = MessageRole.USER, parts = emptyList())
+        val ids = listOf("$nodeId:${message.id}")
+        val payload = JsonInstant.encodeToString(MemoryProgressSyncPayload(
+            id,
+            42,
+            CanonicalSyncHash.sha256Hex(ids.joinToString("\n")),
+            ids
+        ))
+        store.apply("memory_progress", id, payload)
+        repeat(2) { assertEquals(payload, store.snapshot()["memory_progress" to id]) }
+        db.conversationDao().insert(ConversationEntity(id, "assistant", "title", "[]", 1, 1, "[]", false))
+        db.messageNodeDao().insert(MessageNodeEntity(nodeId, id, 0, JsonInstant.encodeToString(listOf(message)), 0))
+        store.snapshot()
+        assertEquals(42L, db.memoryConsolidationDao().getConsolidatedAt(id))
+        store.apply("memory_progress", id, null)
+        assertTrue(store.snapshot().keys.none { it.first == "memory_progress" })
     }
 }
