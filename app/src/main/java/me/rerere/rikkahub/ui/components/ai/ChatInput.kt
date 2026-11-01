@@ -42,6 +42,7 @@ import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -355,68 +356,79 @@ fun ChatInput(
 
                         }
 
-                        ActionIconButton(
-                            onClick = onMoreClick
+                        // 两侧等宽，使收起按钮始终居中；右侧在极窄屏上可滚动，并优先露出发送按钮。
+                        FilledTonalIconButton(
+                            onClick = {
+                                focusInputOnExpand = false
+                                focusManager.clearFocus(force = true)
+                                keyboardController?.hide()
+                                isCollapsed = true
+                            },
+                            modifier = Modifier
+                                .size(width = 54.dp, height = 30.dp)
+                                .testTag("chat_input_collapse_button"),
                         ) {
                             Icon(
-                                imageVector = HugeIcons.Add01,
-                                contentDescription = stringResource(R.string.more_options)
+                                imageVector = HugeIcons.KeyboardOff,
+                                contentDescription = "收起输入区",
+                                modifier = Modifier.size(18.dp),
                             )
                         }
 
-                        if (!voiceState.isActive && (asrState.isAvailable || asrState.isRecording)) {
-                            AsrButton(
-                                state = asrState,
-                                onClick = {
-                                    when (asrState.status) {
-                                        ASRStatus.Listening -> asr.stop()
-                                        ASRStatus.Idle, ASRStatus.Error -> {
-                                            if (!asrPermission.allRequiredPermissionsGranted) {
-                                                asrPermission.requestPermissions()
-                                            } else {
-                                                asrBaseText = state.textContent.text.toString()
-                                                asr.start { transcript ->
-                                                    val spacer =
-                                                        if (asrBaseText.isBlank() || transcript.isBlank()) "" else " "
-                                                    state.setMessageText(asrBaseText + spacer + transcript)
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .horizontalScroll(rememberScrollState(), reverseScrolling = true),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+                        ) {
+                            ActionIconButton(
+                                onClick = onMoreClick
+                            ) {
+                                Icon(
+                                    imageVector = HugeIcons.Add01,
+                                    contentDescription = stringResource(R.string.more_options)
+                                )
+                            }
+
+                            if (!voiceState.isActive && (asrState.isAvailable || asrState.isRecording)) {
+                                AsrButton(
+                                    state = asrState,
+                                    onClick = {
+                                        when (asrState.status) {
+                                            ASRStatus.Listening -> asr.stop()
+                                            ASRStatus.Idle, ASRStatus.Error -> {
+                                                if (!asrPermission.allRequiredPermissionsGranted) {
+                                                    asrPermission.requestPermissions()
+                                                } else {
+                                                    asrBaseText = state.textContent.text.toString()
+                                                    asr.start { transcript ->
+                                                        val spacer =
+                                                            if (asrBaseText.isBlank() || transcript.isBlank()) "" else " "
+                                                        state.setMessageText(asrBaseText + spacer + transcript)
+                                                    }
                                                 }
                                             }
+
+                                            ASRStatus.Connecting, ASRStatus.Stopping -> {}
                                         }
-
-                                        ASRStatus.Connecting, ASRStatus.Stopping -> {}
                                     }
-                                }
-                            )
-                        }
+                                )
+                            }
 
-                        AnimatedVisibility(
-                            visible = !asrState.isRecording,
-                            enter = fadeIn() + scaleIn(),
-                            exit = fadeOut() + scaleOut(),
-                        ) {
-                            SendButton(
-                                loading = loading,
-                                empty = state.isEmpty(),
-                                onClick = { sendMessage() },
-                                onLongClick = { sendMessageWithoutAnswer() },
-                            )
+                            AnimatedVisibility(
+                                visible = !asrState.isRecording,
+                                enter = fadeIn() + scaleIn(),
+                                exit = fadeOut() + scaleOut(),
+                            ) {
+                                SendButton(
+                                    loading = loading,
+                                    empty = state.isEmpty(),
+                                    onClick = { sendMessage() },
+                                    onLongClick = { sendMessageWithoutAnswer() },
+                                )
+                            }
                         }
-                    }
-
-                    FilledTonalButton(
-                        onClick = {
-                            focusInputOnExpand = false
-                            focusManager.clearFocus(force = true)
-                            keyboardController?.hide()
-                            isCollapsed = true
-                        },
-                        modifier = Modifier
-                            .align(Alignment.CenterHorizontally)
-                            .fillMaxWidth(0.72f)
-                            .testTag("chat_input_collapse_button"),
-                    ) {
-                        Icon(HugeIcons.KeyboardOff, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Text("收起输入区", modifier = Modifier.padding(start = 8.dp))
                     }
                 }
             }

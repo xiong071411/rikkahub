@@ -159,10 +159,10 @@ jobs:
       - name: Build with Gradle
         run: |
           chmod +x gradlew
-          ./gradlew :app:testCoexistNormalDebugUnitTest --tests '*Sync*' --tests '*MemoryRepositoryTest' --tests '*ChatInputStateTest' \
+          ./gradlew :app:testCoexistNormalDebugUnitTest --tests '*Sync*' --tests '*MemoryRepositoryTest' --tests '*ChatInputStateTest' --tests '*MarkdownUtilsTest' \
             --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
-          ./gradlew :ai:testDebugUnitTest --tests '*QuotaQueryRunnerTest' --tests '*ChatCompletionsStreamDecoderNullTest' \
+          ./gradlew :ai:testDebugUnitTest --tests '*QuotaQueryRunnerTest' --tests '*ChatCompletionsStreamDecoderNullTest' --tests '*ModelFilterTest' \
             --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
           ./gradlew assembleGithubRelease assembleCoexistRelease assembleCoexistNormalRelease \
