@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import os
 import re
@@ -22,6 +23,8 @@ def main() -> None:
     parser.add_argument("--version-code", required=True, type=int)
     parser.add_argument("--version-name", required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--summary", required=True)
+    parser.add_argument("--dry-run", action="store_true", help="校验安装包与门户内容，不写入文件")
     args = parser.parse_args()
     records = verify(args.artifact_dir, args.build_tools, args.version_code, args.version_name, args.commit)
     portal = args.portal_dir.resolve()
@@ -36,7 +39,13 @@ def main() -> None:
     current = re.sub(r"v\d+\.\d+\.\d+", f"v{args.version_name}", current)
     current = re.sub(r"Build \d+", f"Build {args.version_code}", current)
     current = re.sub(r"build\d+", f"build{args.version_code}", current)
-    current = current.replace("Sync V2 修订增量同步、双副本冲突恢复、32/64位双架构分词库", "助手记忆、翻页按钮位置与模型偏好同步，保留冲突恢复")
+    current, summary_count = re.subn(
+        r'(<tr><td class="meta-label">全新特性:</td><td class="meta-val">).*?(</td></tr>)',
+        lambda match: match.group(1) + html.escape(args.summary) + match.group(2),
+        current,
+    )
+    if summary_count != 2:
+        raise ValueError("门户模板中的变体更新摘要数量不正确")
     by_pair = {(row["flavor"], row["abi"]): row for row in records}
     for flavor in ("coexist", "coexistNormal"):
         anchor = by_pair[(flavor, "armeabi-v7a")]["versioned_filename"]
@@ -44,7 +53,7 @@ def main() -> None:
         extra = "".join(
             '<a class="btn" style="background-color: #238636; color: #ffffff; flex: 1; min-width: 200px;" href="apks/'
             + by_pair[(flavor, abi)]["versioned_filename"] + '">⬇ ' + label + f'（Build {args.version_code}）</a>'
-            for abi, label in (("arm64-v8a", "64位 ARM 专版"), ("x86_64", "x86_64 模拟器版"))
+            for abi, label in (("arm64-v8a", "64位 ARM 专版"),)
         )
         current, count = re.subn(pattern, lambda match: match.group(1) + "\n" + extra, current, count=1, flags=re.DOTALL)
         if count != 1:
@@ -53,7 +62,7 @@ def main() -> None:
         '<a class="btn" style="background-color: #8957e5; color: #ffffff;" href="apks/'
         + by_pair[("github", abi)]["versioned_filename"] + '">⬇ ' + label + f'（Build {args.version_code}）</a>'
         for abi, label in (("armeabi-v7a", "32位 ARM 专版"), ("arm64-v8a", "64位 ARM 专版"),
-                           ("universal", "全架构通用包"), ("x86_64", "x86_64 模拟器版"))
+                           ("universal", "全架构通用包"))
     )
     current += (
         '<!-- 当前原包名版 -->\n<div class="card card-highlight"><div class="card-title rikka-title">'
@@ -64,6 +73,8 @@ def main() -> None:
     for row in records:
         if current.count(f'href="apks/{row["versioned_filename"]}"') != 1:
             raise ValueError("当前门户模板缺少对应下载入口，拒绝更新：" + row["versioned_filename"])
+    if "x86" in current:
+        raise ValueError("当前版本区域仍包含 x86 下载入口")
     # 历史包和 TClock 区域保持当前内容，仅更换 RikkaHub 当前版本区域。
     if updated[end + len(current) - len(original[start:end]):] != original[end:]:
         raise ValueError("门户归档区域发生非预期变化")
@@ -73,6 +84,9 @@ def main() -> None:
         versioned = apks / row["versioned_filename"]
         if versioned.exists() and hashlib.sha256(versioned.read_bytes()).hexdigest() != row["sha256"]:
             raise ValueError("已有同名版本文件内容不同，拒绝覆盖：" + str(versioned))
+    if args.dry_run:
+        print(f"PORTAL_DRY_RUN_OK version={args.version_name} build={args.version_code} packages={len(records)}")
+        return
     args.backup_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
     (args.backup_dir / "apks").mkdir()
     shutil.copy2(index, args.backup_dir / "index.html")

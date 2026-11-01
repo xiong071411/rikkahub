@@ -16,13 +16,17 @@ PACKAGES = {
     "coexist": "me.rerere.rikkahub.coexist",
     "coexistNormal": "me.rerere.rikkahub.coexist.normal",
 }
-ABIS = ("armeabi-v7a", "arm64-v8a", "x86_64", "universal")
+ABIS = ("armeabi-v7a", "arm64-v8a", "universal")
 
 
 def verify(root: Path, build_tools: Path, version_code: int, version_name: str, commit: str = "unknown") -> list[dict]:
     aapt = build_tools / ("aapt2.exe" if (build_tools / "aapt2.exe").exists() else "aapt2")
     signer = build_tools / "lib/apksigner.jar"
     records, dex_hashes = [], {}
+    expected_files = {f"app-{flavor}-{abi}-release.apk" for flavor in PACKAGES for abi in ABIS}
+    actual_files = {apk.name for flavor in PACKAGES for apk in (root / flavor / "release").glob("*.apk")}
+    if actual_files != expected_files:
+        raise ValueError(f"发布包集合不匹配：缺少 {sorted(expected_files - actual_files)}，多出 {sorted(actual_files - expected_files)}")
     for flavor, package in PACKAGES.items():
         for abi in ABIS:
             filename = f"app-{flavor}-{abi}-release.apk"
@@ -53,6 +57,9 @@ def verify(root: Path, build_tools: Path, version_code: int, version_name: str, 
                 dex = [archive.read(name) for name in sorted(names) if name.endswith(".dex")]
                 if not any(b"app_preferences_v2" in data for data in dex):
                     raise ValueError(f"缺少本次设置同步修复代码：{source}")
+                for marker in (b"chat_input_collapse_button", b"chat_input_expand_button"):
+                    if not any(marker in data for data in dex):
+                        raise ValueError(f"缺少输入区折叠代码：{source}: {marker.decode()}")
                 dex_hashes[(flavor, abi)] = [hashlib.sha256(data).hexdigest() for data in dex]
             record = {
                 "source": source.as_posix(), "filename": filename, "flavor": flavor, "abi": abi,

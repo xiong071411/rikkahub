@@ -41,6 +41,7 @@ import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,12 +56,15 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -90,6 +94,8 @@ import me.rerere.hugeicons.stroke.Add01
 import me.rerere.hugeicons.stroke.ArrowUp02
 import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.Fullscreen
+import me.rerere.hugeicons.stroke.Keyboard
+import me.rerere.hugeicons.stroke.KeyboardOff
 import me.rerere.hugeicons.stroke.Zap
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
@@ -148,6 +154,22 @@ fun ChatInput(
 
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    val inputFocusRequester = remember { FocusRequester() }
+    var isCollapsed by rememberSaveable(state) { mutableStateOf(false) }
+    var focusInputOnExpand by remember { mutableStateOf(false) }
+
+    // 展开后等 TextField 重新进入组合并绑定焦点，再唤起键盘；草稿和光标仍由 ChatInputState 持有。
+    LaunchedEffect(isCollapsed, focusInputOnExpand) {
+        if (!isCollapsed && focusInputOnExpand) {
+            inputFocusRequester.requestFocus()
+            keyboardController?.show()
+            focusInputOnExpand = false
+        }
+    }
+
+    if (loading) {
+        KeepScreenOn()
+    }
 
     val themeShape = MaterialTheme.shapes.largeIncreased
     val containerShape = RoundedCornerShape(
@@ -227,6 +249,28 @@ fun ChatInput(
                 .padding(bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            if (isCollapsed) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    FilledTonalButton(
+                        onClick = {
+                            focusInputOnExpand = true
+                            isCollapsed = false
+                        },
+                        modifier = Modifier.testTag("chat_input_expand_button"),
+                    ) {
+                        Icon(HugeIcons.Keyboard, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text(
+                            text = if (state.isEmpty()) "输入消息" else "继续输入",
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
+                    }
+                }
+                return@Column
+            }
+
             MessageQueuePanel(
                 state = messageQueue,
                 onRemove = onRemoveQueuedMessage,
@@ -271,6 +315,7 @@ fun ChatInput(
                         state = state,
                         assistant = assistant,
                         completionProviders = completionProviders,
+                        focusRequester = inputFocusRequester,
                         onSendMessage = { sendMessage() },
                     )
 
@@ -308,6 +353,21 @@ fun ChatInput(
                         }
 
                         ActionIconButton(
+                            onClick = {
+                                focusManager.clearFocus(force = true)
+                                keyboardController?.hide()
+                                isCollapsed = true
+                            },
+                            modifier = Modifier.testTag("chat_input_collapse_button"),
+                        ) {
+                            Icon(
+                                imageVector = HugeIcons.KeyboardOff,
+                                contentDescription = "收起输入区",
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+
+                        ActionIconButton(
                             onClick = onMoreClick
                         ) {
                             Icon(
@@ -339,10 +399,6 @@ fun ChatInput(
                                     }
                                 }
                             )
-                        }
-
-                        if (loading) {
-                            KeepScreenOn()
                         }
 
                         AnimatedVisibility(
@@ -419,11 +475,12 @@ private fun SendButton(
 @Composable
 private fun ActionIconButton(
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
     Surface(
         onClick = onClick,
-        modifier = Modifier.size(30.dp),
+        modifier = modifier.size(30.dp),
         shape = CircleShape,
         tonalElevation = 0.dp,
         color = Color.Transparent,
@@ -441,6 +498,7 @@ private fun TextInputRow(
     state: ChatInputState,
     assistant: Assistant,
     completionProviders: List<ChatCompletionProvider>,
+    focusRequester: FocusRequester,
     onSendMessage: () -> Unit,
 ) {
     val settings = LocalSettings.current
@@ -575,6 +633,7 @@ private fun TextInputRow(
             state = state.textContent,
             modifier = Modifier
                 .fillMaxWidth()
+                .focusRequester(focusRequester)
                 .testTag("chat_input")
                 .contentReceiver(receiveContentListener)
                 .onFocusChanged {

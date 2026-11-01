@@ -1,4 +1,4 @@
-name: Build 32-bit APK
+name: Build ARM APKs
 
 on:
   push:
@@ -159,7 +159,7 @@ jobs:
       - name: Build with Gradle
         run: |
           chmod +x gradlew
-          ./gradlew :app:testCoexistNormalDebugUnitTest --tests '*Sync*' --tests '*MemoryRepositoryTest' \
+          ./gradlew :app:testCoexistNormalDebugUnitTest --tests '*Sync*' --tests '*MemoryRepositoryTest' --tests '*ChatInputStateTest' \
             --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
           ./gradlew assembleGithubRelease assembleCoexistRelease assembleCoexistNormalRelease \
@@ -195,6 +195,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rikkahub-apks-${{ steps.app_meta.outputs.version_name }}
+          if-no-files-found: error
           path: |
             app/build/outputs/apk/github/release/*.apk
             app/build/outputs/apk/coexist/release/*.apk
@@ -206,7 +207,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rikkahub-mapping-${{ steps.app_meta.outputs.version_name }}
+          if-no-files-found: error
           path: app/build/outputs/mapping/*Release/mapping.txt
+
+      - name: Archive test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rikkahub-test-results
+          path: app/build/test-results/testCoexistNormalDebugUnitTest/*.xml
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

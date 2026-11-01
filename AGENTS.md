@@ -116,7 +116,7 @@ App 有一个 `distribution` 维度的 product flavor：`github`（默认）和 
 - 始终使用简体中文回答。个人功能在 `personal-main` 或从它创建的功能分支上开发；开始前检查当前分支和工作区状态，保留已有未提交改动，不覆盖个人功能来同步官方更新。
 - 优先沿用现有实现，按任务需要使用 `.agents/skills/` 中已有的专项技能；复杂逻辑的注释说明原因、状态流转与性能取舍。
 - 上文的 `./gradlew` 命令用于 Linux/macOS；Windows PowerShell 使用 `.\gradlew.bat`，例如 `.\gradlew.bat :app:assembleCoexistDebug`。JDK、Android SDK、签名及路径以当前开发环境配置为准，不套用另一台机器的绝对路径。
-- 根据改动选择相关模块的编译、单元测试或 Lint；纯文档改动检查差异即可。可在本机运行必要的构建，耗时的全量、多架构 Release 构建按需要交给 CI。同一工作区的 Gradle 任务串行执行。
+- 编译、Gradle 单元测试和 Lint 统一在 GitHub CI 执行，本机不运行 Gradle 构建；本机只进行代码检查、轻量脚本验证和 CI 产物校验，避免挤占部署服务的内存。纯文档改动检查差异即可。
 - 日常开发、验证和生成测试 APK 不自动递增版本号、执行发布签名、上传安装包或更新发布门户。需要交付本地 APK 时，提供实际产物路径。
 - Git 提交标题使用简短中文并概括核心变更，只包含本次任务相关文件。推送前留意 `.github/workflows/build-arm32.yml`：当前向 `personal-main` 推送会触发构建和 GitHub Release 上传，不为本地验证主动推送代码或触发发布工作流。
 
@@ -132,6 +132,7 @@ App 有一个 `distribution` 维度的 product flavor：`github`（默认）和 
 
 - Debug 包还带有 `.debug` 后缀。当前个人分支的 `github` 也采用 50% 比例，`play` 为 100%；比例以各变体的 `BuildConfig.SCALE_FACTOR` 为准。
 - 日常调试按目标设备选择一个变体。正式发布共存版时同时提供 `coexist` 与 `coexistNormal`，并保留包含 `armeabi-v7a` 和 `arm64-v8a` 的 Universal APK，检查所需原生库的架构完整性。
+- 个人构建只支持 ARM 32 位、ARM 64 位及同时包含两者的 Universal APK，不构建 x86/x86_64 包或对应原生库。门户发布矩阵为 `github`、`coexist`、`coexistNormal` 三个变体各三包，共 9 包。
 
 ### 发布与服务器部署
 
