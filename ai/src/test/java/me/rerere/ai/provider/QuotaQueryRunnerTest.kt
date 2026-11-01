@@ -13,9 +13,49 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Locale
 
 class QuotaQueryRunnerTest {
     private var captured: Request? = null
+
+    @Test
+    fun `numeric balances work with comma decimal locales`() = runTest {
+        val previous = Locale.getDefault()
+        try {
+            Locale.setDefault(Locale.forLanguageTag("pl-PL"))
+            val setting = ProviderSetting.OpenAI(
+                quotaQuery = QuotaQuery(enabled = true, url = "https://api.example.com/credits", resultPath = "balance"),
+            )
+
+            val quota = client("""{"balance":5.25}""").runQuotaQuery(setting) { "key" }
+
+            assertEquals(ProviderQuota.Balance("5,25"), quota)
+        } finally {
+            Locale.setDefault(previous)
+        }
+    }
+
+    @Test
+    fun `large balances retain cents`() = runTest {
+        val setting = ProviderSetting.OpenAI(
+            quotaQuery = QuotaQuery(enabled = true, url = "https://api.example.com/credits", resultPath = "balance"),
+        )
+
+        val quota = client("""{"balance":123456789.12}""").runQuotaQuery(setting) { "key" }
+
+        assertEquals(ProviderQuota.Balance("%.2f".format(123456789.12)), quota)
+    }
+
+    @Test
+    fun `balance expressions retain precision before calculation`() = runTest {
+        val setting = ProviderSetting.OpenAI(
+            quotaQuery = QuotaQuery(enabled = true, url = "https://api.example.com/credits", resultPath = "credit * 1000"),
+        )
+
+        val quota = client("""{"credit":0.005}""").runQuotaQuery(setting) { "key" }
+
+        assertEquals(ProviderQuota.Balance("%.2f".format(5.0)), quota)
+    }
 
     private fun client(body: String, code: Int = 200) = OkHttpClient.Builder()
         .addInterceptor { chain ->

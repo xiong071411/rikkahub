@@ -7,6 +7,18 @@ import org.junit.Test
 
 class ChatCompletionsStreamDecoderNullTest {
     @Test
+    fun `empty and nonstandard relay roles still deliver response text`() {
+        for (role in listOf("\"\"", "\"unexpected-role\"", "null", "{}")) {
+            val decoder = ChatCompletionsStreamDecoder()
+            val chunks = decoder.accept(
+                SseEvent(data = """{"choices":[{"delta":{"role":$role,"content":"Hello"}}]}"""),
+            ).chunks
+
+            assertEquals("role=$role", "Hello", chunks.filterIsInstance<StreamChunk.TextDelta>().joinToString("") { it.text })
+        }
+    }
+
+    @Test
     fun `explicit null fields from compatible relays do not break decoding`() {
         val decoder = ChatCompletionsStreamDecoder()
         val lines = listOf(

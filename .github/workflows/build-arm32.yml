@@ -162,6 +162,9 @@ jobs:
           ./gradlew :app:testCoexistNormalDebugUnitTest --tests '*Sync*' --tests '*MemoryRepositoryTest' --tests '*ChatInputStateTest' \
             --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
+          ./gradlew :ai:testDebugUnitTest --tests '*QuotaQueryRunnerTest' --tests '*ChatCompletionsStreamDecoderNullTest' \
+            --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
+            '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
           ./gradlew assembleGithubRelease assembleCoexistRelease assembleCoexistNormalRelease \
             --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
@@ -215,7 +218,9 @@ jobs:
         if: always()
         with:
           name: rikkahub-test-results
-          path: app/build/test-results/testCoexistNormalDebugUnitTest/*.xml
+          path: |
+            app/build/test-results/testCoexistNormalDebugUnitTest/*.xml
+            ai/build/test-results/testDebugUnitTest/*.xml
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

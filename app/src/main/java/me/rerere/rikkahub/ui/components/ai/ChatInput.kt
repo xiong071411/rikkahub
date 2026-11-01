@@ -56,7 +56,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -117,6 +116,7 @@ import me.rerere.rikkahub.ui.context.LocalASRState
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.hooks.ChatInputState
+import me.rerere.rikkahub.ui.hooks.rememberSharedPreferenceBoolean
 import me.rerere.rikkahub.utils.SoundEffectPlayer
 import org.koin.compose.koinInject
 import me.rerere.rikkahub.ui.pages.chat.VoicePhase
@@ -155,7 +155,8 @@ fun ChatInput(
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val inputFocusRequester = remember { FocusRequester() }
-    var isCollapsed by rememberSaveable(state) { mutableStateOf(false) }
+    // 输入区的显隐属于本机阅读偏好，与会话草稿分离；切换会话或重启后仍保持，直到手动展开。
+    var isCollapsed by rememberSharedPreferenceBoolean("chat_input_collapsed", false)
     var focusInputOnExpand by remember { mutableStateOf(false) }
 
     // 展开后等 TextField 重新进入组合并绑定焦点，再唤起键盘；草稿和光标仍由 ChatInputState 持有。
@@ -259,7 +260,9 @@ fun ChatInput(
                             focusInputOnExpand = true
                             isCollapsed = false
                         },
-                        modifier = Modifier.testTag("chat_input_expand_button"),
+                        modifier = Modifier
+                            .fillMaxWidth(0.72f)
+                            .testTag("chat_input_expand_button"),
                     ) {
                         Icon(HugeIcons.Keyboard, contentDescription = null, modifier = Modifier.size(18.dp))
                         Text(
@@ -353,21 +356,6 @@ fun ChatInput(
                         }
 
                         ActionIconButton(
-                            onClick = {
-                                focusManager.clearFocus(force = true)
-                                keyboardController?.hide()
-                                isCollapsed = true
-                            },
-                            modifier = Modifier.testTag("chat_input_collapse_button"),
-                        ) {
-                            Icon(
-                                imageVector = HugeIcons.KeyboardOff,
-                                contentDescription = "收起输入区",
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
-
-                        ActionIconButton(
                             onClick = onMoreClick
                         ) {
                             Icon(
@@ -413,6 +401,22 @@ fun ChatInput(
                                 onLongClick = { sendMessageWithoutAnswer() },
                             )
                         }
+                    }
+
+                    FilledTonalButton(
+                        onClick = {
+                            focusInputOnExpand = false
+                            focusManager.clearFocus(force = true)
+                            keyboardController?.hide()
+                            isCollapsed = true
+                        },
+                        modifier = Modifier
+                            .align(Alignment.CenterHorizontally)
+                            .fillMaxWidth(0.72f)
+                            .testTag("chat_input_collapse_button"),
+                    ) {
+                        Icon(HugeIcons.KeyboardOff, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Text("收起输入区", modifier = Modifier.padding(start = 8.dp))
                     }
                 }
             }

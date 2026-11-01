@@ -57,7 +57,7 @@ def verify(root: Path, build_tools: Path, version_code: int, version_name: str, 
                 dex = [archive.read(name) for name in sorted(names) if name.endswith(".dex")]
                 if not any(b"app_preferences_v2" in data for data in dex):
                     raise ValueError(f"缺少本次设置同步修复代码：{source}")
-                for marker in (b"chat_input_collapse_button", b"chat_input_expand_button"):
+                for marker in (b"chat_input_collapse_button", b"chat_input_expand_button", b"chat_input_collapsed"):
                     if not any(marker in data for data in dex):
                         raise ValueError(f"缺少输入区折叠代码：{source}: {marker.decode()}")
                 dex_hashes[(flavor, abi)] = [hashlib.sha256(data).hexdigest() for data in dex]
