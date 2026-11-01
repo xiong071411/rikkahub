@@ -106,6 +106,8 @@ fun SyncTab(
     val syncConfig = settings.syncServerConfig
     val isSyncing by vm.isSyncing.collectAsStateWithLifecycle()
     val syncStatusMessage by vm.syncStatusMessage.collectAsStateWithLifecycle()
+    val syncErrorMessage by vm.syncErrorMessage.collectAsStateWithLifecycle()
+    val syncWarnings by vm.syncWarnings.collectAsStateWithLifecycle()
     val unresolvedConflicts by vm.unresolvedSyncConflicts.collectAsStateWithLifecycle()
     val pendingFileCount by vm.pendingSyncFileCount.collectAsStateWithLifecycle()
     val outboxCount by vm.outboxSyncCount.collectAsStateWithLifecycle()
@@ -274,6 +276,21 @@ fun SyncTab(
                         }
                     }
 
+                    syncErrorMessage?.let { message ->
+                        Text(
+                            message,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    syncWarnings.forEach { message ->
+                        Text(
+                            message,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+
                     Spacer(modifier = Modifier.height(14.dp))
 
                     FlowRow(
@@ -292,7 +309,11 @@ fun SyncTab(
                                             ""
                                         }
                                         toaster.show(
-                                            "同步完成 (Rev #${summary.currentRevision})：拉取 ${summary.pulledConversations} 条、推送 ${summary.pushedConversations} 条$conflictSuffix",
+                                            if (summary.warnings.isNotEmpty()) {
+                                                "其他数据已同步，${summary.warnings.size} 个工作区需要处理，请查看页面提示"
+                                            } else {
+                                                "同步完成 (Rev #${summary.currentRevision})：拉取 ${summary.pulledConversations} 条、推送 ${summary.pushedConversations} 条$conflictSuffix"
+                                            },
                                             type = ToastType.Success
                                         )
                                     } catch (e: Exception) {

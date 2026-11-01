@@ -156,15 +156,21 @@ jobs:
           find /tmp/simple-build-armeabi-v7a -name "libsimple.so" -exec cp {} app/src/main/jniLibs/armeabi-v7a/ \;
           ls -la app/src/main/jniLibs/armeabi-v7a/libsimple.so
 
-      - name: Build with Gradle
+      - name: Test app sync and data protection
         run: |
           chmod +x gradlew
           ./gradlew :app:testCoexistNormalDebugUnitTest --tests '*Sync*' --tests '*MemoryRepositoryTest' --tests '*ChatInputStateTest' --tests '*MarkdownUtilsTest' \
             --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
+
+      - name: Test AI regressions
+        run: |
           ./gradlew :ai:testDebugUnitTest --tests '*QuotaQueryRunnerTest' --tests '*ChatCompletionsStreamDecoderNullTest' --tests '*ModelFilterTest' \
             --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
+
+      - name: Build all ARM release variants
+        run: |
           ./gradlew assembleGithubRelease assembleCoexistRelease assembleCoexistNormalRelease \
             --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace

@@ -18,13 +18,13 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.files.saveUploadFromBytes
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.data.sync.S3BackupItem
+import me.rerere.rikkahub.data.sync.S3Sync
 import me.rerere.rikkahub.data.sync.engine.SyncV2InfoResponseDto
 import me.rerere.rikkahub.data.sync.importer.ChatboxImporter
 import me.rerere.rikkahub.data.sync.importer.CherryStudioProviderImporter
 import me.rerere.rikkahub.data.sync.webdav.WebDavBackupItem
 import me.rerere.rikkahub.data.sync.webdav.WebDavSync
-import me.rerere.rikkahub.data.sync.S3BackupItem
-import me.rerere.rikkahub.data.sync.S3Sync
 import me.rerere.rikkahub.utils.UiState
 import java.io.File
 
@@ -46,6 +46,8 @@ class BackupVM(
 
     val isSyncing = MutableStateFlow(false)
     val syncStatusMessage = MutableStateFlow("")
+    val syncErrorMessage = MutableStateFlow<String?>(null)
+    val syncWarnings = MutableStateFlow<List<String>>(emptyList())
 
     // 按需订阅（WhileSubscribed）：离开同步设置页 5 秒后自动解绑 Room 查询，降低手表与手机待机功耗
     val unresolvedSyncConflicts = incrementalSyncEngine.observeUnresolvedConflicts()
@@ -102,11 +104,17 @@ class BackupVM(
 
     suspend fun startIncrementalSync(): me.rerere.rikkahub.data.sync.engine.SyncSummary {
         isSyncing.value = true
+        syncErrorMessage.value = null
+        syncWarnings.value = emptyList()
         syncStatusMessage.value = "准备同步..."
         return try {
             incrementalSyncEngine.sync(settings.value.syncServerConfig) { msg ->
                 syncStatusMessage.value = msg
-            }.getOrThrow()
+            }.getOrThrow().also { syncWarnings.value = it.warnings }
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            syncErrorMessage.value = error.message ?: "同步失败（${error.javaClass.simpleName}）"
+            throw error
         } finally {
             isSyncing.value = false
         }

@@ -223,6 +223,7 @@ data class SyncSummary(
     val conflictsDetected: Int = 0,
     val currentRevision: Long = 0L,
     val serverTimestamp: Long,
+    val warnings: List<String> = emptyList(),
 )
 
 /**
@@ -509,13 +510,18 @@ class IncrementalSyncEngine(
         config: SyncServerConfig,
         onProgress: (String) -> Unit = {},
     ): Result<SyncSummary> = withContext(Dispatchers.IO) {
+        var stage = "准备同步"
+        val reportProgress: (String) -> Unit = { message ->
+            stage = message
+            onProgress(message)
+        }
         runCatching {
             syncMutex.withLock {
                 val (baseUrl, token) = validateConfigOrThrow(config)
                 val clientDeviceId = getOrCreateClientDeviceId(config)
                 val clientDeviceName = resolveDeviceName(config)
 
-                onProgress("正在验证 Sync V2 服务器与修订基线...")
+                reportProgress("正在验证 Sync V2 服务器与修订基线...")
                 val serverInfo = fetchServerInfo(baseUrl, token)
                 require("memory_file" in serverInfo.supported_entity_types) {
                     "服务端尚未支持记忆与完整偏好同步，请先升级服务端（客户端至少需要记忆同步能力）"
@@ -558,18 +564,21 @@ class IncrementalSyncEngine(
                     }
                 }
 
-                // Step 0a: 先尝试冲刷此前因流式生成而暂存的 sync_inbox_pending
+                reportProgress("正在检查工作区凭据...")
+                coverage?.refreshAvailability()
+                // Step 0a: 重试暂存变更；重新可读的工作区可能需要先保护本地差异。
+                val conflictsBeforeDrain = syncV2Dao.getUnresolvedConflicts().size
                 drainReadyInboxPending()
 
                 var pulledConvCount = 0
                 var syncedAssistantsCount = 0
                 var syncedProvidersCount = 0
-                var conflictsCount = 0
+                var conflictsCount = (syncV2Dao.getUnresolvedConflicts().size - conflictsBeforeDrain).coerceAtLeast(0)
                 val referencedRemoteFiles = LinkedHashSet<String>()
 
                 if (!isReconciled || cursor == 0L) {
                     // ---- 首次 V2 基线对账模式（兼容 V1 老用户无损平滑升级与新设备首次全量拉取） ----
-                    onProgress("正在执行 Sync V2 首次基线对账...")
+                    reportProgress("正在执行 Sync V2 首次基线对账...")
                     val reconcileStats = pullAndReconcileInitialBaseline(
                         baseUrl = baseUrl,
                         token = token,
@@ -577,7 +586,7 @@ class IncrementalSyncEngine(
                         deviceName = clientDeviceName,
                         serverId = serverInfo.server_id,
                         targetRevision = serverInfo.current_revision,
-                        onProgress = onProgress,
+                        onProgress = reportProgress,
                     )
                     pulledConvCount += reconcileStats.pulledConversations
                     syncedAssistantsCount += reconcileStats.syncedAssistants
@@ -587,17 +596,17 @@ class IncrementalSyncEngine(
                     cursor = reconcileStats.newCursor
 
                     // 对账完成后，扫描本地独有的实体（如服务端尚不存在的新会话、生图节点与生图记录）入队待推
-                    onProgress("正在扫描本地独有对话与创作记录...")
+                    reportProgress("正在扫描本地独有对话与创作记录...")
                     enqueueLocalDiffIntoOutbox(includeRoomEntities = true)
                 } else {
                     // ---- 常规 Sync V2 增量同步模式 ----
                     // Step 0b: 在拉取前先把 Settings 修改/删除及任何未入队的本地修改固化进 sync_outbox，保留各自的旧 baseRevision
-                    onProgress("正在检查本地未同步变更...")
+                    reportProgress("正在检查本地未同步变更...")
                     enqueueLocalDiffIntoOutbox(includeRoomEntities = true)
 
                     // Step 1: 锁定 upper_bound_revision 分页拉取云端增量
                     if (serverInfo.current_revision > cursor) {
-                        onProgress("正在分页拉取云端增量修订...")
+                        reportProgress("正在分页拉取云端增量修订...")
                         val pullStats = pullIncrementalChanges(
                             baseUrl = baseUrl,
                             token = token,
@@ -606,7 +615,7 @@ class IncrementalSyncEngine(
                             serverId = serverInfo.server_id,
                             startCursor = cursor,
                             upperBoundRevision = serverInfo.current_revision,
-                            onProgress = onProgress,
+                            onProgress = reportProgress,
                         )
                         if (pullStats.resetRequired) {
                             // 服务端修订日志已被裁剪，自动回退做一次无损全量对账
@@ -618,7 +627,7 @@ class IncrementalSyncEngine(
                                 deviceName = clientDeviceName,
                                 serverId = serverInfo.server_id,
                                 targetRevision = serverInfo.current_revision,
-                                onProgress = onProgress,
+                                onProgress = reportProgress,
                             )
                             pulledConvCount += rec.pulledConversations
                             syncedAssistantsCount += rec.syncedAssistants
@@ -639,6 +648,7 @@ class IncrementalSyncEngine(
 
                 // Step 2: 按外键拓扑顺序分批推送本地 sync_outbox
                 val outboxEntries = syncV2Dao.getAllOutboxOrdered()
+                    .filterNot { isUnavailable(it.entityType, it.entityId) }
                     .sortedWith(compareBy({ entityPushPriority[it.entityType] ?: 99 }, { it.id }))
 
                 var pushedConvCount = 0
@@ -647,7 +657,7 @@ class IncrementalSyncEngine(
                 if (outboxEntries.isNotEmpty()) {
                     val batches = outboxEntries.chunked(PUSH_BATCH_LIMIT)
                     batches.forEachIndexed { batchIdx, batch ->
-                        onProgress("正在推送本地变更 (${batchIdx + 1}/${batches.size})...")
+                        reportProgress("正在推送本地变更 (${batchIdx + 1}/${batches.size})...")
                         val pushOutcome = pushOutboxBatch(
                             baseUrl = baseUrl,
                             token = token,
@@ -692,7 +702,7 @@ class IncrementalSyncEngine(
                     syncFilesEnabled = config.syncFiles,
                     newlyReferencedRelPaths = referencedRemoteFiles,
                     scanAllLocalMissing = true,
-                    onProgress = onProgress,
+                    onProgress = reportProgress,
                 )
 
                 conflictsCount += (syncV2Dao.getUnresolvedConflicts().size - conflictsBeforeFiles).coerceAtLeast(0)
@@ -707,8 +717,12 @@ class IncrementalSyncEngine(
                 }
                 conversationBridge.purgeLegacyTombstones(nowTime - 30L * 24 * 3600 * 1000)
 
-                onProgress(
-                    if (conflictsCount > 0) {
+                val warnings = coverage?.issues.orEmpty().map { it.message }
+
+                reportProgress(
+                    if (warnings.isNotEmpty()) {
+                        "其他数据同步完成，${warnings.size} 个工作区需要重新填写 SSH 凭据"
+                    } else if (conflictsCount > 0) {
                         "同步完成（检测到 $conflictsCount 项并发冲突，已完整保护至冲突中心）"
                     } else if (pendingFiles > 0) {
                         "数据同步完成，仍有 $pendingFiles 个附件等待传输"
@@ -726,8 +740,13 @@ class IncrementalSyncEngine(
                     conflictsDetected = conflictsCount,
                     currentRevision = cursor,
                     serverTimestamp = nowTime,
+                    warnings = warnings,
                 )
             }
+        }.recoverCatching { failure ->
+            if (failure is CancellationException || failure !is Exception) throw failure
+            val detail = failure.message?.takeIf { it.isNotBlank() } ?: failure.javaClass.simpleName
+            throw IllegalStateException("同步失败：$stage（$detail）", failure)
         }
     }
 
@@ -874,7 +893,7 @@ class IncrementalSyncEngine(
     )
 
     /**
-     * 冲刷 `sync_inbox_pending` 中此前因为流式生成而延后的会话更新。
+     * 重试因生成中、记忆分支未就绪或工作区凭据不可读而暂存的远端更新。
      */
     private suspend fun drainReadyInboxPending() {
         val pendingList = syncV2Dao.getAllInboxPending()
@@ -889,6 +908,25 @@ class IncrementalSyncEngine(
             }
             val existingOutbox = syncV2Dao.getOutboxEntry(pending.entityType, pending.entityId)
             if (existingOutbox != null) continue
+            if (isUnavailable(pending.entityType, pending.entityId)) continue
+            // 首次对账时不可读的工作区尚无基线；凭据修复后先保护本地配置，再应用暂存的云端版本。
+            if (pending.entityType == "workspace" &&
+                syncV2Dao.getEntityState(pending.entityType, pending.entityId) == null) {
+                val local = coverage?.snapshot()?.get(pending.entityType to pending.entityId)
+                if (local != null && CanonicalSyncHash.computeSemanticHash(pending.entityType, local, localFilesDir) !=
+                    pending.contentHash) {
+                    saveLocalConflictRecord(
+                        conflictId = "reconcile-${pending.entityType}-${pending.entityId}-${pending.revision}",
+                        entityType = pending.entityType,
+                        entityId = pending.entityId,
+                        operation = "upsert",
+                        baseRevision = 0L,
+                        serverRevision = pending.revision,
+                        localPayload = local,
+                        serverPayload = pending.payload,
+                    )
+                }
+            }
             applyOrStageRemoteChange(
                 SyncV2ChangeItemDto(
                     revision = pending.revision,
@@ -954,6 +992,7 @@ class IncrementalSyncEngine(
         }
 
         // 读取本地当前快照映射 (entityType, entityId) -> portableJson
+        onProgress("正在扫描本地数据并对齐云端基线...")
         val localSnapshotMap = collectLocalEntitySnapshotMap()
         val now = System.currentTimeMillis()
         var pulledConvs = 0
@@ -980,6 +1019,10 @@ class IncrementalSyncEngine(
             val key = change.entity_type to change.entity_id
             val remoteHash = change.content_hash.ifBlank {
                 CanonicalSyncHash.computeSemanticHash(change.entity_type, change.payload, localFilesDir)
+            }
+            if (isUnavailable(change.entity_type, change.entity_id)) {
+                stageUnavailableChange(change, remoteHash, now)
+                continue
             }
             if (change.operation == "upsert" && change.payload.isNotBlank()) {
                 refFiles.addAll(
@@ -1165,6 +1208,10 @@ class IncrementalSyncEngine(
                 )
             }
 
+            if (isUnavailable(change.entity_type, change.entity_id)) {
+                stageUnavailableChange(change, remoteHash, now)
+                continue
+            }
             // 关键保护：如果本地已有未推送修改，绝不在此处静默覆盖，留给 Step 2 Push 走服务端乐观并发校验与冲突保护！
             val pendingOutbox = syncV2Dao.getOutboxEntry(change.entity_type, change.entity_id)
             if (pendingOutbox != null) {
@@ -1192,9 +1239,22 @@ class IncrementalSyncEngine(
         )
     }
 
-    /**
-     * 应用单条云端变更；若目标会话正在流式生成，则安全暂存至 `sync_inbox_pending`。
-     */
+    private fun isUnavailable(type: String, id: String): Boolean =
+        coverage?.issues.orEmpty().any { it.entityType == type && it.entityId == id }
+
+    private suspend fun stageUnavailableChange(change: SyncV2ChangeItemDto, hash: String, now: Long) {
+        syncV2Dao.upsertInboxPending(SyncInboxPendingEntity(
+            entityType = change.entity_type,
+            entityId = change.entity_id,
+            revision = change.revision,
+            operation = change.operation,
+            payload = change.payload,
+            contentHash = hash,
+            receivedAt = now,
+        ))
+    }
+
+    /** 应用远端变更；目标尚不可用时保留待重试记录，且不推进该实体基线。 */
     private suspend fun applyOrStageRemoteChange(
         change: SyncV2ChangeItemDto,
         remoteHash: String,
@@ -1202,6 +1262,10 @@ class IncrementalSyncEngine(
         settingsAlreadyApplied: Boolean = false,
         forceMemory: Boolean = false,
     ): Boolean {
+        if (!forceMemory && isUnavailable(change.entity_type, change.entity_id)) {
+            stageUnavailableChange(change, remoteHash, now)
+            return false
+        }
         if (change.entity_type == "conversation") {
             val convId = runCatching { Uuid.parse(change.entity_id) }.getOrNull()
             if (convId != null && conversationBridge.isConversationBusyForSync(convId)) {
@@ -1229,6 +1293,11 @@ class IncrementalSyncEngine(
         // 新修改固化为旧修订上的待推项，让服务端保留双方冲突副本。
         if (!forceMemory && !alreadyIdentical && currentState != null && change.entity_type in ExtendedSyncTypes.all) {
             val local = coverage?.snapshot()?.get(change.entity_type to change.entity_id)
+            // 等待网络期间密钥也可能失效；快照重新检查后，不能把不可读误判为本地删除。
+            if (isUnavailable(change.entity_type, change.entity_id)) {
+                stageUnavailableChange(change, remoteHash, now)
+                return false
+            }
             val localHash = local?.let { CanonicalSyncHash.computeSemanticHash(change.entity_type, it, localFilesDir) }
             if ((!currentState.deleted && localHash != currentState.lastSyncedHash) ||
                 (currentState.deleted && local != null)) {
@@ -1593,7 +1662,8 @@ class IncrementalSyncEngine(
             setOf("assistant", "provider")
         }
         for ((key, state) in statesByKey) {
-            if (!state.deleted && key.first in checkedTypes && key !in snapshotMap) {
+            if (!state.deleted && key.first in checkedTypes && key !in snapshotMap &&
+                !isUnavailable(key.first, key.second)) {
                 syncMutationRecorder.recordDelete(key.first, key.second)
             }
         }

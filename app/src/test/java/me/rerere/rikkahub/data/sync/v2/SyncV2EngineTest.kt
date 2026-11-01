@@ -168,6 +168,77 @@ class SyncV2EngineTest {
     }
 
     @Test
+    fun `unreadable workspace credentials defer initial remote data while conversations still sync`() = runBlocking {
+        val id = Uuid.random().toString()
+        val local = "unreadable local workspace retained"
+        val cloud = """{"id":"$id","name":"server","ssh":{"password":"cloud password"}}"""
+        extended.values["workspace" to id] = local
+        extended.issues.add(SyncCoverageIssue("workspace", id, "需要重新填写 SSH 密码"))
+        server.seedRemoteEntity("workspace", id, "upsert", cloud)
+        val conversation = sampleConversation("可用会话", "消息")
+        server.seedRemoteEntity(
+            "conversation",
+            conversation.id.toString(),
+            "upsert",
+            JsonInstant.encodeToString(conversation)
+        )
+        val summary = engine.sync(defaultConfig).getOrThrow()
+        assertEquals(1, summary.warnings.size)
+        assertNotNull(conversationBridge.conversations[conversation.id])
+        assertEquals(local, extended.values["workspace" to id])
+        assertEquals(cloud, syncV2Dao.getAllInboxPending().firstOrNull {
+            it.entityType == "workspace" &&
+                it.entityId == id
+        }?.payload)
+        assertEquals(null, syncV2Dao.getEntityState("workspace", id))
+        assertEquals(null, syncV2Dao.getOutboxEntry("workspace", id))
+        engine.sync(defaultConfig).getOrThrow()
+        assertEquals("upsert", server.entities.getValue("workspace" to id).operation)
+        extended.issues.clear()
+        val repaired = cloud.replace("cloud password", "repaired local password")
+        extended.values["workspace" to id] = repaired
+        assertTrue(engine.sync(defaultConfig).getOrThrow().warnings.isEmpty())
+        assertEquals(cloud, extended.values["workspace" to id])
+        assertTrue(syncV2Dao.getUnresolvedConflicts().any { it.entityId == id && it.localPayload == repaired })
+        assertEquals(null, syncV2Dao.getAllInboxPending().firstOrNull {
+            it.entityType == "workspace" &&
+                it.entityId == id
+        })
+    }
+
+    @Test
+    fun `unreadable synced workspace never becomes a delete or sends an old queued credential payload`() = runBlocking {
+        val id = Uuid.random().toString()
+        val cloud = """{"id":"$id","name":"server","ssh":{"password":"cloud password"}}"""
+        extended.values["workspace" to id] = cloud
+        engine.sync(defaultConfig).getOrThrow()
+        recorder.recordUpsert("workspace", id, cloud.replace("cloud password", "old queued password"))
+        val pending = syncV2Dao.getOutboxEntry("workspace", id)!!
+        extended.issues.add(SyncCoverageIssue("workspace", id, "需要重新填写 SSH 密码"))
+        extended.values["workspace" to id] = "opaque local ciphertext"
+        val conversation = sampleConversation("其他内容继续同步", "消息")
+        conversationBridge.saveUserLocalEdit(conversation)
+        val summary = engine.sync(defaultConfig).getOrThrow()
+        assertEquals(1, summary.warnings.size)
+        assertEquals(cloud, server.entities.getValue("workspace" to id).payload)
+        assertEquals(pending.mutationId, syncV2Dao.getOutboxEntry("workspace", id)?.mutationId)
+        assertTrue(summary.pushedConversations > 0)
+        server.seedRemoteEntity("workspace", id, "delete", "")
+        engine.sync(defaultConfig).getOrThrow()
+        assertEquals("opaque local ciphertext", extended.values["workspace" to id])
+        assertEquals(pending.mutationId, syncV2Dao.getOutboxEntry("workspace", id)?.mutationId)
+    }
+
+    @Test
+    fun `exceptions without a message retain failure stage and exception type`() = runBlocking {
+        extended.failure = NullPointerException()
+        val error = engine.sync(defaultConfig).exceptionOrNull()!!
+        assertTrue(error.message.orEmpty().contains("扫描本地数据"))
+        assertTrue(error.message.orEmpty().contains("NullPointerException"))
+        assertTrue(error.cause is NullPointerException)
+    }
+
+    @Test
     fun `multi page pull locks upper bound revision without skipping or duplicating items`() = runBlocking {
         // 先完成空基线对账，使客户端进入常规增量模式
         assertTrue(engine.sync(defaultConfig).isSuccess)
@@ -1262,7 +1333,12 @@ private class FakeSyncV2HttpServer(
 
 private class FakeExtendedCoverage : SyncCoverage {
     val values = linkedMapOf<Pair<String, String>, String>()
-    override suspend fun snapshot(): Map<Pair<String, String>, String> = values.toMap()
+    override val issues = mutableListOf<SyncCoverageIssue>()
+    var failure: Exception? = null
+    override suspend fun snapshot(): Map<Pair<String, String>, String> {
+        failure?.let { throw it }
+        return values.filterKeys { key -> issues.none { it.entityType == key.first && it.entityId == key.second } }
+    }
     override suspend fun apply(type: String, id: String, payload: String?) {
         if (payload == null) values.remove(type to id) else values[type to id] = payload
     }

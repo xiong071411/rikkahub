@@ -41,7 +41,7 @@ class SyncCoverageStoreTest {
     @get:Rule val temporary = TemporaryFolder()
     private val databases = mutableListOf<AppDatabase>()
 
-    private fun device(name: String): Triple<File, AppDatabase, SyncCoverageStore> {
+    private fun device(name: String, decryptOverride: ((String) -> String)? = null): Triple<File, AppDatabase, SyncCoverageStore> {
         val root = temporary.newFolder(name)
         val app = ApplicationProvider.getApplicationContext<Context>()
         val context = object : ContextWrapper(app) {
@@ -50,12 +50,60 @@ class SyncCoverageStoreTest {
         }
         val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java).allowMainThreadQueries().build()
         databases.add(db)
-        val store = SyncCoverageStore(context, db, encrypt = { "$name:$it" }, decrypt = { it.removePrefix("$name:") })
+        val store = SyncCoverageStore(context, db, encrypt = { "$name:$it" }, decrypt =
+            decryptOverride ?: { it.removePrefix("$name:") })
         return Triple(root, db, store)
     }
 
     @After fun close() {
         databases.forEach { it.close() }
+    }
+
+    @Test
+    fun `credentials from another devices backup preserve opaque records and isolate only affected workspaces`() = runBlocking {
+        var repaired = false
+        val (_, db, store) = device("restored") {
+            if (!repaired) throw javax.crypto.AEADBadTagException()
+            it.removePrefix("foreign:")
+        }
+        val localId = Uuid.random().toString()
+        db.workspaceDao().upsert(WorkspaceEntity(localId, "本地", localId, createdAt = 1, updatedAt = 1))
+        val settings =
+            SshWorkspaceSettings("host", username = "me", remoteDir = "/srv", encryptedPassword = "foreign:password")
+        val passwordId = Uuid.random().toString()
+        val keyId = Uuid.random().toString()
+        val password = WorkspaceEntity(
+            passwordId,
+            "密码工作区",
+            passwordId,
+            createdAt = 1,
+            updatedAt = 1,
+            type = "SSH",
+            sshConfig = JsonInstant.encodeToString(settings)
+        )
+        val key = password.copy(
+            id = keyId,
+            root = keyId,
+            name = "私钥工作区",
+            sshConfig = JsonInstant.encodeToString(
+                settings.copy(encryptedPassword = null, encryptedPrivateKey = "foreign:key")
+            )
+        )
+        db.workspaceDao().upsert(password)
+        db.workspaceDao().upsert(key)
+        val snapshot = store.snapshot()
+        assertTrue(snapshot.containsKey("workspace" to localId))
+        assertFalse(snapshot.containsKey("workspace" to passwordId))
+        assertFalse(snapshot.containsKey("workspace" to keyId))
+        assertEquals(2, store.issues.size)
+        assertTrue(store.issues.any { it.message.contains("密码工作区") && it.message.contains("SSH 密码") })
+        assertTrue(store.issues.any { it.message.contains("私钥工作区") && it.message.contains("SSH 私钥") })
+        assertFalse(store.issues.any { it.message.contains("foreign:") })
+        assertEquals(password.sshConfig, db.workspaceDao().getById(passwordId)!!.sshConfig)
+        assertEquals(key.sshConfig, db.workspaceDao().getById(keyId)!!.sshConfig)
+        repaired = true
+        assertEquals(3, store.snapshot().keys.count { it.first == "workspace" })
+        assertTrue(store.issues.isEmpty())
     }
 
     @Test

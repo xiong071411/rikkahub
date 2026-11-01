@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.data.sync.v2
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.model.SshWorkspaceSettings
@@ -8,6 +9,13 @@ import me.rerere.workspace.WorkspaceShellStatus
 import me.rerere.workspace.WorkspaceType
 import me.rerere.workspace.ssh.SshAuthType
 import me.rerere.workspace.ssh.SshHostKey
+
+class WorkspaceCredentialUnavailable(
+    val workspaceId: String,
+    val workspaceName: String,
+    field: String,
+    cause: Exception,
+) : IllegalStateException("工作区「$workspaceName」的 SSH $field 无法在本机解密，请重新填写后重试；其他数据可继续同步。", cause)
 
 /** 密文绑定设备，在线同步传输解密后的凭据，接收端再用自己的 Keystore 加密。 */
 @Serializable
@@ -73,13 +81,20 @@ data class WorkspaceSyncPayload(
     companion object {
         fun fromEntity(entity: WorkspaceEntity, decrypt: (String) -> String): WorkspaceSyncPayload {
             val config = entity.sshSettings()
-            // 解密失败必须终止本次同步，不能用空凭据覆盖云端仍然可用的密码或私钥。
+            fun decode(value: String?, field: String): String? = value?.let {
+                try {
+                    decrypt(it)
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    // 只暂停这个工作区，不能把不可解密的凭据变成 null 后覆盖云端。
+                    throw WorkspaceCredentialUnavailable(entity.id, entity.name, field, error)
+                }
+            }
             val ssh = config?.let {
                 SshSyncPayload(
                     it.host, it.port, it.username, it.authType, it.remoteDir, it.hostKey,
-                    it.encryptedPassword?.let(
-                        decrypt
-                    ), it.encryptedPrivateKey?.let(decrypt), it.encryptedPassphrase?.let(decrypt),
+                    decode(it.encryptedPassword, "密码"), decode(it.encryptedPrivateKey, "私钥"),
+                    decode(it.encryptedPassphrase, "私钥口令"),
                 )
             }
             return WorkspaceSyncPayload(

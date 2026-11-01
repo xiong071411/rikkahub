@@ -28,12 +28,16 @@ import java.nio.file.StandardCopyOption
 import kotlin.uuid.Uuid
 
 interface SyncCoverage {
+    val issues: List<SyncCoverageIssue> get() = emptyList()
+    suspend fun refreshAvailability() {}
     suspend fun snapshot(): Map<Pair<String, String>, String>
     suspend fun apply(type: String, id: String, payload: String?)
     suspend fun materializeResources()
     suspend fun confirmLocal(type: String, id: String, payload: String?) {}
     suspend fun managedTargets(): Set<String>
 }
+
+data class SyncCoverageIssue(val entityType: String, val entityId: String, val message: String)
 
 /**
  * Settings 之外的持久化覆盖。资源使用不可变内容寻址文件，清单走 V2 修订与冲突机制；
@@ -52,8 +56,26 @@ class SyncCoverageStore(
     private val preferences = context.getSharedPreferences("rikkahub.preferences", Context.MODE_PRIVATE)
     private data class Fingerprint(val length: Long, val modified: Long, val blobModified: Long, val file: SyncBlobFile)
     private val fingerprints = HashMap<String, Fingerprint>()
+    private val workspacePayloads = LinkedHashMap<Pair<String, String>, String>()
+    private val workspaceIssues = LinkedHashMap<String, SyncCoverageIssue>()
+    override val issues: List<SyncCoverageIssue> get() = workspaceIssues.values.toList()
+
+    override suspend fun refreshAvailability() {
+        workspacePayloads.clear()
+        workspaceIssues.clear()
+        db.workspaceDao().getAll().forEach { entity ->
+            try {
+                workspacePayloads["workspace" to entity.id] =
+                    json.encodeToString(WorkspaceSyncPayload.fromEntity(entity, decrypt))
+            } catch (error: WorkspaceCredentialUnavailable) {
+                workspaceIssues[entity.id] = SyncCoverageIssue("workspace", entity.id, error.message.orEmpty())
+            }
+        }
+    }
 
     override suspend fun snapshot(): Map<Pair<String, String>, String> = buildMap {
+        refreshAvailability()
+        putAll(workspacePayloads)
         // 会话可能因正在生成而延迟落地；先重试进度，未匹配的负载继续进入快照，不能误发删除。
         dao.resources().filter { it.entityType == "memory_progress" && !it.deleted && it.materializedHash.isEmpty() }
             .forEach { pending ->
@@ -65,9 +87,6 @@ class SyncCoverageStore(
                     )
                 }
             }
-        db.workspaceDao().getAll().forEach { entity ->
-            put("workspace" to entity.id, json.encodeToString(WorkspaceSyncPayload.fromEntity(entity, decrypt)))
-        }
         dao.usage().forEach {
             put(
                 "usage_record" to it.syncId,
