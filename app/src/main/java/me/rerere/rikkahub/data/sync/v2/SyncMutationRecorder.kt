@@ -45,6 +45,12 @@ class SyncMutationRecorder(
         }
     }
 
+    suspend fun recordDeleteAll(entityType: String, localIds: Collection<String>) {
+        val ids = localIds.toSet() + syncV2Dao.getEntityStatesByType(entityType).map { it.entityId } +
+            syncV2Dao.getAllOutboxOrdered().filter { it.entityType == entityType }.map { it.entityId }
+        runInTransaction { ids.forEach { recordDelete(entityType, it) } }
+    }
+
     suspend fun hasPendingMutation(entityType: String, entityId: String): Boolean =
         syncV2Dao.getOutboxEntry(entityType, entityId) != null
 

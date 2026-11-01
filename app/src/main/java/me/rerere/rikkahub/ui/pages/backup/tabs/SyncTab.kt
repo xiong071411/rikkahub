@@ -85,6 +85,15 @@ private fun entityTypeLabel(entityType: String): String = when (entityType) {
     "media_node" -> "生图节点"
     "media_record" -> "生图记录"
     "extra_setting" -> "扩展设置"
+    "workspace" -> "工作区配置"
+    "skill_bundle" -> "技能"
+    "file_asset" -> "附件"
+    "ui_preference" -> "界面偏好"
+    "translation_history" -> "翻译历史"
+    "usage_record" -> "用量记录"
+    "gen_media" -> "旧版生图记录"
+    "managed_file" -> "文件信息"
+    "memory_progress" -> "记忆整理进度"
     else -> entityType
 }
 
@@ -253,7 +262,11 @@ fun SyncTab(
                             ) {
                                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                 Text(
-                                    text = syncStatusMessage.ifEmpty { stringResource(R.string.backup_page_sync_server_syncing) },
+                                    text = syncStatusMessage.ifEmpty {
+                                        stringResource(
+                                            R.string.backup_page_sync_server_syncing
+                                        )
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.primary
                                 )

@@ -138,20 +138,8 @@ class SkillManager(
      */
     suspend fun pruneOrphanedEnabledSkills(): List<SkillMetadata> = withContext(Dispatchers.IO) {
         val skills = listSkills()
-        val existing = skills.mapTo(HashSet()) { it.name }
-        settingsStore.update { settings ->
-            var changed = false
-            val newAssistants = settings.assistants.map { assistant ->
-                val pruned = assistant.enabledSkills.filterTo(LinkedHashSet()) { it in existing }
-                if (pruned.size != assistant.enabledSkills.size) {
-                    changed = true
-                    assistant.copy(enabledSkills = pruned)
-                } else {
-                    assistant
-                }
-            }
-            if (changed) settings.copy(assistants = newAssistants) else settings
-        }
+        // 同步清单可能已到达而技能文件尚在下载；磁盘缺失不能证明用户删除了技能。
+        // 主动删除仍在 deleteSkill 内更新启用列表。
         skills
     }
 

@@ -19,6 +19,7 @@ import java.io.File
 object AttachmentPathNormalizer {
     val KNOWN_REL_PREFIXES: List<String> = listOf(
         "upload/",
+        "sync_blobs/",
         "media_creation/",
         "skills/",
         "fonts/",

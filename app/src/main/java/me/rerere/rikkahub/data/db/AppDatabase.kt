@@ -67,8 +67,9 @@ import me.rerere.rikkahub.utils.JsonInstant
         SyncConflictEntity::class,
         SyncFileQueueEntity::class,
         SyncMetaEntity::class,
+        me.rerere.rikkahub.data.db.entity.SyncResourceEntity::class,
     ],
-    version = 33,
+    version = 34,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -121,6 +122,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun translationHistoryDao(): TranslationHistoryDAO
 
     abstract fun usageRecordDao(): UsageRecordDAO
+
+    abstract fun syncCoverageDao(): me.rerere.rikkahub.data.db.dao.SyncCoverageDAO
 
     abstract fun syncV2Dao(): SyncV2Dao
 }

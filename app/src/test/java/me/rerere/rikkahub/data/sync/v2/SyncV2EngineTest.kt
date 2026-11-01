@@ -92,6 +92,7 @@ class SyncV2EngineTest {
     @get:Rule
     val timeout: Timeout = Timeout.seconds(30)
 
+    private val extended = FakeExtendedCoverage()
     private lateinit var filesDir: File
     private lateinit var storeScope: CoroutineScope
     private lateinit var settingsStore: SettingsStore
@@ -127,7 +128,11 @@ class SyncV2EngineTest {
             syncV2Dao = syncV2Dao,
             filesDirProvider = { filesDir },
         )
-        memoryRepository = me.rerere.rikkahub.data.repository.MemoryRepository(me.rerere.rikkahub.data.repository.FakeMemoryDAO(), recorder)
+        memoryRepository =
+            me.rerere.rikkahub.data.repository.MemoryRepository(
+                me.rerere.rikkahub.data.repository.FakeMemoryDAO(),
+                recorder
+            )
         conversationBridge = FakeSyncConversationBridge(recorder, filesDir)
         folderDao = FakeFolderDao()
         favoriteDao = FakeFavoriteDao()
@@ -150,6 +155,7 @@ class SyncV2EngineTest {
             favoriteDAO = favoriteDao,
             mediaCreationDAO = mediaDao,
             okHttpClient = okHttp,
+            coverage = extended,
             pullPageLimit = 2, // 故意设为每页 2 条以覆盖多页游标与快照上界测试
         )
     }
@@ -177,7 +183,12 @@ class SyncV2EngineTest {
         // 模拟第 1 页拉取返回后，另一台设备在服务端又插入第 6 条会话（验证 upper_bound_revision 快照锁）
         val lateConv = sampleConversation(title = "分页中途插入的第6条会话", userText = "下轮再拉")
         server.onAfterFirstPullPage = {
-            server.seedRemoteEntity("conversation", lateConv.id.toString(), "upsert", JsonInstant.encodeToString(lateConv))
+            server.seedRemoteEntity(
+                "conversation",
+                lateConv.id.toString(),
+                "upsert",
+                JsonInstant.encodeToString(lateConv)
+            )
         }
 
         val summary = engine.sync(defaultConfig).getOrThrow()
@@ -236,7 +247,9 @@ class SyncV2EngineTest {
         val webEdit = sharedConv.copy(
             title = "项目周报讨论（Web 已定稿）",
             messageNodes = sharedConv.messageNodes + MessageNode(
-                messages = listOf(UIMessage(role = MessageRole.ASSISTANT, parts = listOf(UIMessagePart.Text("Web 端生成的总结回复"))))
+                messages = listOf(
+                    UIMessage(role = MessageRole.ASSISTANT, parts = listOf(UIMessagePart.Text("Web 端生成的总结回复")))
+                )
             ),
             updateAt = Instant.ofEpochMilli(1700000300000L),
         )
@@ -356,8 +369,20 @@ class SyncV2EngineTest {
             createAt = 1700000000000L,
             updateAt = 1700000001000L,
         )
-        val node1 = MediaCreationNodeEntity(id = "mn-1", sessionId = "ms-1", selectedRecordId = "mr-2", createAt = 1700000001000L)
-        val node2 = MediaCreationNodeEntity(id = "mn-2", sessionId = "ms-1", selectedRecordId = "mr-3", createAt = 1700000002000L)
+        val node1 =
+            MediaCreationNodeEntity(
+                id = "mn-1",
+                sessionId = "ms-1",
+                selectedRecordId = "mr-2",
+                createAt = 1700000001000L
+            )
+        val node2 =
+            MediaCreationNodeEntity(
+                id = "mn-2",
+                sessionId = "ms-1",
+                selectedRecordId = "mr-3",
+                createAt = 1700000002000L
+            )
         val rec1 = sampleMediaRecord(id = "mr-1", sessionId = "ms-1", nodeId = "mn-1", prompt = "第一版草图")
         val rec2 = sampleMediaRecord(id = "mr-2", sessionId = "ms-1", nodeId = "mn-1", prompt = "第一版精修")
         val rec3 = sampleMediaRecord(id = "mr-3", sessionId = "ms-1", nodeId = "mn-2", prompt = "第二版构图")
@@ -442,6 +467,79 @@ class SyncV2EngineTest {
     }
 
     @Test
+    fun `extended metadata syncs without files and preserves both sides of workspace conflicts`() = runBlocking {
+        val workspaceId = Uuid.random().toString()
+        val initial = """{"id":"$workspaceId","name":"工作区","type":"LOCAL"}"""
+        extended.values["workspace" to workspaceId] = initial
+        engine.sync(defaultConfig.copy(syncFiles = false)).getOrThrow()
+        assertEquals(initial, server.entities.getValue("workspace" to workspaceId).payload)
+        val remote = initial.replace("工作区", "手机改名")
+        server.seedRemoteEntity("workspace", workspaceId, "upsert", remote)
+        extended.values["workspace" to workspaceId] = initial.replace("工作区", "手表改名")
+        engine.sync(defaultConfig.copy(syncFiles = false)).getOrThrow()
+        val conflict = syncV2Dao.getUnresolvedConflicts().single { it.entityType == "workspace" }
+        assertTrue(conflict.localPayload.contains("手表改名"))
+        assertTrue(conflict.serverPayload.contains("手机改名"))
+        assertEquals(remote, extended.values["workspace" to workspaceId])
+        extended.values.remove("workspace" to workspaceId)
+        engine.sync(defaultConfig.copy(syncFiles = false)).getOrThrow()
+        assertEquals("delete", server.entities.getValue("workspace" to workspaceId).operation)
+    }
+
+    @Test
+    fun `a missing attachment is retained and retried after a later upload without another entity revision`() = runBlocking {
+        val path = "upload/late.jpg"
+        val remote = Conversation(
+            id = Uuid.random(),
+            assistantId = TEST_ASSISTANT_ID,
+            title = "延迟附件",
+            messageNodes = listOf(
+                MessageNode(
+                    messages = listOf(UIMessage(role = MessageRole.USER, parts = listOf(UIMessagePart.Image(path))))
+                )
+            )
+        )
+        server.seedRemoteEntity("conversation", remote.id.toString(), "upsert", JsonInstant.encodeToString(remote))
+        engine.sync(defaultConfig).getOrThrow()
+        val queued = syncV2Dao.getFileQueueByDirection("download").single { it.relativePath == path }
+        assertTrue(queued.retryCount > 0)
+        server.files[path] = "uploaded later".toByteArray()
+        syncV2Dao.upsertFileQueue(queued.copy(updatedAt = 0))
+        engine.sync(defaultConfig).getOrThrow()
+        assertEquals("uploaded later", File(filesDir, path).readText())
+        assertTrue(syncV2Dao.getFileQueueByDirection("download").isEmpty())
+    }
+
+    @Test
+    fun `user avatar and font are rediscovered after local file loss`() = runBlocking {
+        engine.sync(defaultConfig).getOrThrow()
+        val avatar = File(filesDir, "upload/avatar.jpg").apply {
+            parentFile!!.mkdirs()
+            writeText("avatar")
+        }
+        val font = File(filesDir, "fonts/chat.ttf").apply {
+            parentFile!!.mkdirs()
+            writeText("font")
+        }
+        settingsStore.update {
+            it.copy(
+                displaySetting = it.displaySetting.copy(
+                    userAvatar = me.rerere.rikkahub.data.model.Avatar.Image("file://${avatar.absolutePath}"),
+                    chatCustomFontPath = "fonts/chat.ttf"
+                )
+            )
+        }
+        engine.sync(defaultConfig).getOrThrow()
+        server.files["upload/avatar.jpg"] = avatar.readBytes()
+        server.files["fonts/chat.ttf"] = font.readBytes()
+        avatar.delete()
+        font.delete()
+        engine.sync(defaultConfig).getOrThrow()
+        assertEquals("avatar", avatar.readText())
+        assertEquals("font", font.readText())
+    }
+
+    @Test
     fun `global and assistant memory sync without attachments and survive deletes`() = runBlocking {
         engine.sync(defaultConfig).getOrThrow()
         val owner = Uuid.random().toString()
@@ -468,7 +566,12 @@ class SyncV2EngineTest {
         server.seedRemoteEntity("memory_file", remote.entityId, "upsert", JsonInstant.encodeToString(remote))
         engine.sync(defaultConfig).getOrThrow()
         memoryRepository.writeFile(remote.assistantId, remote.path, "手表离线记忆")
-        server.seedRemoteEntity("memory_file", remote.entityId, "upsert", JsonInstant.encodeToString(remote.copy(content = "手机新增记忆", updatedAt = 2)))
+        server.seedRemoteEntity(
+            "memory_file",
+            remote.entityId,
+            "upsert",
+            JsonInstant.encodeToString(remote.copy(content = "手机新增记忆", updatedAt = 2))
+        )
         engine.sync(defaultConfig).getOrThrow()
         val conflict = syncV2Dao.getUnresolvedConflicts().single { it.entityType == "memory_file" }
         assertTrue(conflict.localPayload.contains("手表离线记忆"))
@@ -478,11 +581,20 @@ class SyncV2EngineTest {
 
     @Test
     fun `initial pull applies assistant references and preferences atomically across pages`() = runBlocking {
-        val mode = me.rerere.rikkahub.data.model.PromptInjection.ModeInjection(id = Uuid.random(), name = "远端模式", content = "test")
+        val mode = me.rerere.rikkahub.data.model.PromptInjection.ModeInjection(
+            id = Uuid.random(),
+            name = "远端模式",
+            content = "test"
+        )
         val assistant = me.rerere.rikkahub.data.model.Assistant(id = Uuid.random(), modeInjectionIds = setOf(mode.id))
         server.seedRemoteEntity("assistant", assistant.id.toString(), "upsert", JsonInstant.encodeToString(assistant))
         server.seedRemoteEntity("extra_setting", "mode_injections", "upsert", JsonInstant.encodeToString(listOf(mode)))
-        server.seedRemoteEntity("extra_setting", SyncSettingsContract.PREFERENCES_KEY, "upsert", """{"displaySetting":{"messageJumperOnLeft":true}}""")
+        server.seedRemoteEntity(
+            "extra_setting",
+            SyncSettingsContract.PREFERENCES_KEY,
+            "upsert",
+            """{"displaySetting":{"messageJumperOnLeft":true}}"""
+        )
         engine.sync(defaultConfig).getOrThrow()
         val settings = settingsStore.awaitLoaded()
         assertTrue(settings.displaySetting.messageJumperOnLeft)
@@ -497,10 +609,12 @@ class SyncV2EngineTest {
         syncV2Dao.upsertMeta(SyncMetaEntity("cursor", server.currentRevision.toString()))
         syncV2Dao.upsertMeta(SyncMetaEntity("v2_reconciled", "1"))
         syncV2Dao.upsertEntityState(SyncEntityStateEntity(
-            entityType = "memory_file", entityId = remote.entityId,
+            entityType = "memory_file",
+            entityId = remote.entityId,
             lastSyncedRevision = server.currentRevision,
             lastSyncedHash = CanonicalSyncHash.computeSemanticHash("memory_file", JsonInstant.encodeToString(remote)),
-            deleted = false, updatedAt = 1,
+            deleted = false,
+            updatedAt = 1,
         ))
         engine.sync(defaultConfig).getOrThrow()
         assertEquals("upsert", server.entities.getValue("memory_file" to remote.entityId).operation)
@@ -526,10 +640,20 @@ class SyncV2EngineTest {
 
     @Test
     fun `invalid preferences are not acknowledged as synced`() = runBlocking {
-        server.seedRemoteEntity("extra_setting", SyncSettingsContract.PREFERENCES_KEY, "upsert", """{"displaySetting":{"messageJumperOnLeft":"invalid"}}""")
+        server.seedRemoteEntity(
+            "extra_setting",
+            SyncSettingsContract.PREFERENCES_KEY,
+            "upsert",
+            """{"displaySetting":{"messageJumperOnLeft":"invalid"}}"""
+        )
         assertTrue(engine.sync(defaultConfig).isFailure)
         assertEquals(null, syncV2Dao.getEntityState("extra_setting", SyncSettingsContract.PREFERENCES_KEY))
-        server.seedRemoteEntity("extra_setting", SyncSettingsContract.PREFERENCES_KEY, "upsert", """{"displaySetting":{"messageJumperOnLeft":true}}""")
+        server.seedRemoteEntity(
+            "extra_setting",
+            SyncSettingsContract.PREFERENCES_KEY,
+            "upsert",
+            """{"displaySetting":{"messageJumperOnLeft":true}}"""
+        )
         engine.sync(defaultConfig).getOrThrow()
         assertTrue(settingsStore.awaitLoaded().displaySetting.messageJumperOnLeft)
     }
@@ -665,7 +789,8 @@ private class FakeSyncV2Dao : SyncV2Dao {
         val assignedId = if (entry.id != 0L) entry.id else nextOutboxId++
         val saved = entry.copy(id = assignedId)
         outboxFlow.value = outboxFlow.value
-            .filterNot { (it.entityType == entry.entityType && it.entityId == entry.entityId) || it.id == assignedId } + saved
+            .filterNot { (it.entityType == entry.entityType && it.entityId == entry.entityId) || it.id == assignedId } +
+            saved
         return assignedId
     }
 
@@ -949,7 +1074,7 @@ private class FakeSyncV2HttpServer(
         return when {
             path == "/api/sync/v2/info" -> {
                 val dto = SyncV2InfoResponseDto(
-                    supported_entity_types = listOf("memory_file"),
+                    supported_entity_types = listOf("memory_file") + ExtendedSyncTypes.all,
                     protocol_version = 2,
                     server_id = serverId,
                     current_revision = currentRevision,
@@ -1021,7 +1146,12 @@ private class FakeSyncV2HttpServer(
 
                     val key = m.entity_type to m.entity_id
                     val existing = entities[key]
-                    val normPayload = if (m.operation == "delete") "" else CanonicalSyncHash.normalizeEntityPayload(m.entity_type, m.payload)
+                    val normPayload = if (m.operation ==
+                        "delete") {
+                        ""
+                    } else {
+                        CanonicalSyncHash.normalizeEntityPayload(m.entity_type, m.payload)
+                    }
                     val hash = CanonicalSyncHash.computeSemanticHash(m.entity_type, normPayload)
 
                     if (existing != null && existing.contentHash == hash && existing.operation == m.operation) {
@@ -1128,4 +1258,14 @@ private class FakeSyncV2HttpServer(
             .message(if (code in 200..299) "OK" else "ERR")
             .body(body.toResponseBody("application/json; charset=utf-8".toMediaType()))
             .build()
+}
+
+private class FakeExtendedCoverage : SyncCoverage {
+    val values = linkedMapOf<Pair<String, String>, String>()
+    override suspend fun snapshot(): Map<Pair<String, String>, String> = values.toMap()
+    override suspend fun apply(type: String, id: String, payload: String?) {
+        if (payload == null) values.remove(type to id) else values[type to id] = payload
+    }
+    override suspend fun materializeResources() {}
+    override suspend fun managedTargets(): Set<String> = emptySet()
 }

@@ -29,6 +29,7 @@ internal object AppDatabaseFactory {
                 Migration_27_28,
                 Migration_30_31,
                 Migration_32_33,
+                me.rerere.rikkahub.data.db.migrations.Migration_33_34,
             )
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onOpen(db: SupportSQLiteDatabase) {

@@ -57,6 +57,9 @@ def verify(root: Path, build_tools: Path, version_code: int, version_name: str, 
                 dex = [archive.read(name) for name in sorted(names) if name.endswith(".dex")]
                 if not any(b"app_preferences_v2" in data for data in dex):
                     raise ValueError(f"缺少本次设置同步修复代码：{source}")
+                for marker in (b"sync_blobs/", b"skill_bundle", b"file_asset", b"memory_progress", b"translation_history", b"usage_record"):
+                    if not any(marker in data for data in dex):
+                        raise ValueError(f"缺少完整同步实现：{source}: {marker.decode()}")
                 for marker in (b"chat_input_collapse_button", b"chat_input_expand_button", b"chat_input_collapsed"):
                     if not any(marker in data for data in dex):
                         raise ValueError(f"缺少输入区折叠代码：{source}: {marker.decode()}")

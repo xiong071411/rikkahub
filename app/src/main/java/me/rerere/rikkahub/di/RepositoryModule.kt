@@ -36,7 +36,7 @@ val repositoryModule = module {
     }
 
     single {
-        TranslationHistoryRepository(get())
+        TranslationHistoryRepository(get(), get())
     }
 
     single {
@@ -54,7 +54,7 @@ val repositoryModule = module {
     }
 
     single {
-        FilesRepository(get())
+        FilesRepository(get(), get())
     }
 
     single {
@@ -100,7 +100,7 @@ val repositoryModule = module {
     } onClose { it?.close() }
 
     single {
-        WorkspaceRepository(get(), get(), get(), get(), get())
+        WorkspaceRepository(get(), get(), get(), get(), get(), get())
     }
 
     single {

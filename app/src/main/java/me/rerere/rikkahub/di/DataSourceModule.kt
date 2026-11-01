@@ -324,6 +324,7 @@ val dataSourceModule = module {
             syncTombstoneManager = get(),
             okHttpClient = get(),
             lazyChatService = lazy { get() },
+            sshPool = get(),
         )
     }
 

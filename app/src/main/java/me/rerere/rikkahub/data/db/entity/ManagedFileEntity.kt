@@ -4,6 +4,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 
 @Entity(
     tableName = "managed_files",
@@ -12,6 +13,7 @@ import androidx.room.PrimaryKey
         Index(value = ["folder"])
     ]
 )
+@Serializable
 data class ManagedFileEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,

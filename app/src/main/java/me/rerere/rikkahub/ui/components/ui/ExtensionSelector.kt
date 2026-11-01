@@ -23,9 +23,9 @@ import me.rerere.hugeicons.stroke.Puzzle
 import me.rerere.hugeicons.stroke.Zap
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.skills.SkillManager
 import me.rerere.rikkahub.data.skills.SkillMetadata
-import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.ui.components.ai.ExtensionEmptyState
 import me.rerere.rikkahub.ui.components.ai.LorebooksContent
 import me.rerere.rikkahub.ui.components.ai.ModeInjectionsContent
@@ -45,7 +45,6 @@ internal enum class ExtensionTab(
     override val label: String
         @Composable get() = stringResource(labelRes)
 }
-
 
 @Composable
 fun ExtensionSelector(
@@ -161,6 +160,14 @@ fun ExtensionSelector(
                 }
 
                 ExtensionTab.SKILLS -> {
+                    val pendingSkills = assistant.enabledSkills - skills.map { it.name }.toSet()
+                    if (pendingSkills.isNotEmpty()) {
+                        androidx.compose.material3.Text(
+                            text = "${pendingSkills.size} 个已启用技能等待同步下载",
+                            modifier = Modifier.padding(16.dp),
+                            style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                        )
+                    }
                     if (skills.isNotEmpty()) {
                         SkillsContent(
                             skills = skills,

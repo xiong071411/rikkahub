@@ -9,6 +9,7 @@ private const val MAX_HISTORY_COUNT = 100
 
 class TranslationHistoryRepository(
     private val dao: TranslationHistoryDAO,
+    private val recorder: me.rerere.rikkahub.data.sync.v2.SyncMutationRecorder? = null,
 ) {
     fun pagingAll(): PagingSource<Int, TranslationHistoryEntity> = dao.pagingAll()
 
@@ -18,20 +19,30 @@ class TranslationHistoryRepository(
         targetLanguage: String,
         modelId: Uuid,
     ) {
-        dao.insert(
-            TranslationHistoryEntity(
-                id = Uuid.random().toString(),
-                sourceText = sourceText,
-                translatedText = translatedText,
-                targetLanguage = targetLanguage,
-                modelId = modelId.toString(),
-                createAt = System.currentTimeMillis(),
-            )
+        val entity = TranslationHistoryEntity(
+            id = Uuid.random().toString(),
+            sourceText = sourceText,
+            translatedText = translatedText,
+            targetLanguage = targetLanguage,
+            modelId = modelId.toString(),
+            createAt = System.currentTimeMillis(),
+        )
+        dao.insert(entity)
+        recorder?.recordUpsert(
+            "translation_history",
+            entity.id,
+            me.rerere.rikkahub.utils.JsonInstant.encodeToString(entity)
         )
         dao.trimTo(MAX_HISTORY_COUNT)
     }
 
-    suspend fun deleteById(id: String) = dao.deleteById(id)
+    suspend fun deleteById(id: String) {
+        recorder?.recordDelete("translation_history", id)
+        dao.deleteById(id)
+    }
 
-    suspend fun deleteAll() = dao.deleteAll()
+    suspend fun deleteAll() {
+        recorder?.recordDeleteAll("translation_history", dao.getAllHistory().map { it.id })
+        dao.deleteAll()
+    }
 }

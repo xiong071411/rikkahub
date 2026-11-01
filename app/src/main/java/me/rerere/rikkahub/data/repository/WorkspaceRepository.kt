@@ -45,8 +45,24 @@ class WorkspaceRepository(
     private val rootfsInstaller: RootfsInstaller,
     private val settingsStore: SettingsStore,
     private val sshPool: SshConnectionPool,
+    private val syncRecorder: me.rerere.rikkahub.data.sync.v2.SyncMutationRecorder? = null,
 ) {
     fun listFlow(): Flow<List<WorkspaceEntity>> = dao.listFlow()
+
+    private suspend fun saveSharedConfiguration(workspace: WorkspaceEntity) {
+        if (syncRecorder == null) {
+            dao.upsert(workspace)
+            return
+        }
+        syncRecorder.runInTransaction {
+            dao.upsert(workspace)
+            val payload = me.rerere.rikkahub.data.sync.v2.WorkspaceSyncPayload.fromEntity(
+                workspace,
+                SecretCipher::decrypt
+            )
+            syncRecorder.recordUpsert("workspace", workspace.id, JsonInstant.encodeToString(payload))
+        }
+    }
 
     suspend fun checkIntegrity() = withContext(Dispatchers.IO) {
         val workspaces = dao.getAll()
@@ -91,7 +107,7 @@ class WorkspaceRepository(
             lastAccessAt = null,
         )
         manager.ensureWorkspace(workspace.root)
-        dao.upsert(workspace)
+        saveSharedConfiguration(workspace)
         return workspace
     }
 
@@ -130,7 +146,7 @@ class WorkspaceRepository(
                 sshConfig = JsonInstant.encodeToString(settings),
             )
         }
-        dao.upsert(workspace)
+        saveSharedConfiguration(workspace)
         withContext(Dispatchers.IO) { sshPool.close(workspace.id) }
         return workspace
     }
@@ -141,7 +157,7 @@ class WorkspaceRepository(
         require(!isNameTaken(finalName, excludeId = id)) {
             "Workspace name already exists: $finalName"
         }
-        dao.upsert(
+        saveSharedConfiguration(
             workspace.copy(
                 name = finalName,
                 updatedAt = System.currentTimeMillis(),
@@ -163,7 +179,7 @@ class WorkspaceRepository(
     suspend fun setToolApproval(id: String, toolName: String, needsApproval: Boolean): Boolean {
         val workspace = dao.getById(id) ?: return false
         val overrides = workspace.toolApprovalOverrides() + (toolName to needsApproval)
-        dao.upsert(
+        saveSharedConfiguration(
             workspace.copy(
                 toolApprovals = JsonInstant.encodeToString(overrides),
                 updatedAt = System.currentTimeMillis(),
@@ -348,7 +364,14 @@ class WorkspaceRepository(
 
     suspend fun delete(id: String): Boolean {
         val workspace = dao.getById(id) ?: return false
-        dao.deleteById(id)
+        if (syncRecorder != null) {
+            syncRecorder.runInTransaction {
+                syncRecorder.recordDelete("workspace", id)
+                dao.deleteById(id)
+            }
+        } else {
+            dao.deleteById(id)
+        }
         withContext(Dispatchers.IO) {
             sshPool.close(id)
             manager.deleteWorkspace(workspace.root)

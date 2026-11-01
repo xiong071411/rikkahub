@@ -46,6 +46,7 @@ object CanonicalSyncHash {
         "media_record" to setOf("updateAt"),
         "favorite" to setOf("updatedAt"),
         "memory_file" to setOf("updatedAt"),
+        "managed_file" to setOf("updatedAt"),
     )
 
     /**
@@ -86,7 +87,8 @@ object CanonicalSyncHash {
         if (isAttachment) {
             val urlPrim = mutable["url"] as? JsonPrimitive
             if (urlPrim != null && urlPrim.isString) {
-                mutable["url"] = JsonPrimitive(AttachmentPathNormalizer.normalizeAttachmentUrl(urlPrim.content, filesDir))
+                mutable["url"] =
+                    JsonPrimitive(AttachmentPathNormalizer.normalizeAttachmentUrl(urlPrim.content, filesDir))
             }
         }
         if (typeStr == "tool" || typeStr.endsWith(".Tool")) {
@@ -220,7 +222,8 @@ object CanonicalSyncHash {
 
     private fun normalizeMediaAssetsJsonString(rawJson: String, filesDir: File? = null): Pair<String, Boolean> {
         if (rawJson.isBlank()) return rawJson to false
-        val arr = runCatching { parser.parseToJsonElement(rawJson) as? JsonArray }.getOrNull() ?: return rawJson to false
+        val arr =
+            runCatching { parser.parseToJsonElement(rawJson) as? JsonArray }.getOrNull() ?: return rawJson to false
         var changed = false
         val updated = arr.map { item ->
             val obj = item as? JsonObject ?: return@map item
@@ -350,6 +353,33 @@ object CanonicalSyncHash {
         }
 
         when (entityType) {
+            "file_asset" -> (obj["blobPath"] as? JsonPrimitive)?.content?.let {
+                if (AttachmentPathNormalizer.isManagedRelativePath(
+                        it
+                    )) {
+                    refs.add(it)
+                }
+            }
+            "skill_bundle" -> (obj["files"] as? JsonArray)?.forEach { file ->
+                val path = ((file as? JsonObject)?.get("blobPath") as? JsonPrimitive)?.content
+                if (path != null && AttachmentPathNormalizer.isManagedRelativePath(path)) refs.add(path)
+            }
+            "managed_file", "gen_media" -> {
+                val field = if (entityType == "managed_file") "relativePath" else "path"
+                (obj[field] as? JsonPrimitive)?.content?.let {
+                    if (AttachmentPathNormalizer.isManagedRelativePath(
+                            it
+                        )) {
+                        refs.add(it)
+                    }
+                }
+                if (entityType == "gen_media") {
+                    (obj["sourcePaths"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.lines()?.forEach {
+                        val path = AttachmentPathNormalizer.normalizeAttachmentUrl(it, filesDir)
+                        if (AttachmentPathNormalizer.isManagedRelativePath(path)) refs.add(path)
+                    }
+                }
+            }
             "extra_setting" -> {
                 val display = obj["displaySetting"] as? JsonObject
                 val avatar = display?.get("userAvatar") as? JsonObject
@@ -371,7 +401,9 @@ object CanonicalSyncHash {
                 }
             }
             "assistant" -> {
-                val avatarUrl = ((obj["avatar"] as? JsonObject)?.get("url") as? JsonPrimitive)?.takeIf { it.isString }?.content
+                val avatarUrl = ((obj["avatar"] as? JsonObject)?.get(
+                    "url"
+                ) as? JsonPrimitive)?.takeIf { it.isString }?.content
                 if (avatarUrl != null) {
                     val norm = AttachmentPathNormalizer.normalizeAttachmentUrl(avatarUrl, filesDir)
                     if (AttachmentPathNormalizer.isManagedRelativePath(norm)) refs.add(norm)
@@ -392,7 +424,9 @@ object CanonicalSyncHash {
                     val draftObj = runCatching { parser.parseToJsonElement(draftRaw) as? JsonObject }.getOrNull()
                     val assets = draftObj?.get("assets") as? JsonArray
                     assets?.forEach { assetEl ->
-                        val p = ((assetEl as? JsonObject)?.get("path") as? JsonPrimitive)?.takeIf { it.isString }?.content
+                        val p = ((assetEl as? JsonObject)?.get(
+                            "path"
+                        ) as? JsonPrimitive)?.takeIf { it.isString }?.content
                         if (p != null) {
                             val norm = AttachmentPathNormalizer.normalizeAttachmentUrl(p, filesDir)
                             if (AttachmentPathNormalizer.isManagedRelativePath(norm)) refs.add(norm)
@@ -471,7 +505,14 @@ object CanonicalSyncHash {
                     if (idx > 0) sb.append(',')
                     appendEscapedJsonString(sb, k)
                     sb.append(':')
-                    appendCanonicalElement(sb, entityType, v, isRoot = false, sortKeys = sortKeys, normalizeIntegerFloat = normalizeIntegerFloat)
+                    appendCanonicalElement(
+                        sb,
+                        entityType,
+                        v,
+                        isRoot = false,
+                        sortKeys = sortKeys,
+                        normalizeIntegerFloat = normalizeIntegerFloat
+                    )
                 }
                 sb.append('}')
             }
@@ -479,7 +520,14 @@ object CanonicalSyncHash {
                 sb.append('[')
                 element.forEachIndexed { idx, item ->
                     if (idx > 0) sb.append(',')
-                    appendCanonicalElement(sb, entityType, item, isRoot = false, sortKeys = sortKeys, normalizeIntegerFloat = normalizeIntegerFloat)
+                    appendCanonicalElement(
+                        sb,
+                        entityType,
+                        item,
+                        isRoot = false,
+                        sortKeys = sortKeys,
+                        normalizeIntegerFloat = normalizeIntegerFloat
+                    )
                 }
                 sb.append(']')
             }

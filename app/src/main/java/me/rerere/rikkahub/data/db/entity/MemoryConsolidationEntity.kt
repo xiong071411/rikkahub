@@ -4,6 +4,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 
 /**
  * 一个对话的记忆整理进度：[consolidatedAt] 及之前的消息已经整理进记忆库。
@@ -21,6 +22,7 @@ import androidx.room.PrimaryKey
         )
     ],
 )
+@Serializable
 data class MemoryConsolidationEntity(
     @PrimaryKey
     @ColumnInfo("conversation_id")

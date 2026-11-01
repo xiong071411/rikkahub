@@ -4,6 +4,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 
 /**
  * 翻译页的一条翻译记录，翻译成功后写入，只保留最近的若干条。
@@ -12,6 +13,7 @@ import androidx.room.PrimaryKey
     tableName = "translation_history",
     indices = [Index(value = ["create_at"])]
 )
+@Serializable
 data class TranslationHistoryEntity(
     @PrimaryKey
     val id: String,

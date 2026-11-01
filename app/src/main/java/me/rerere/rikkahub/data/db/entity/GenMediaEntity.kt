@@ -2,10 +2,15 @@ package me.rerere.rikkahub.data.db.entity
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 
-@Entity
+@Entity(indices = [Index(value = ["sync_id"], unique = true)])
+@Serializable
 data class GenMediaEntity(
+    @ColumnInfo(name = "sync_id", defaultValue = "''")
+    val syncId: String = kotlin.uuid.Uuid.random().toString(),
     @PrimaryKey(autoGenerate = true)
     val id: Int = 0,
     @ColumnInfo("path")

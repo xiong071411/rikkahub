@@ -4,6 +4,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 
 /**
  * 一次模型请求的 token 用量流水，每次请求（多步对话的每一步、每次重试）各记一行。
@@ -13,9 +14,12 @@ import androidx.room.PrimaryKey
  */
 @Entity(
     tableName = "usage_record",
-    indices = [Index(value = ["created_at"])]
+    indices = [Index(value = ["created_at"]), Index(value = ["sync_id"], unique = true)]
 )
+@Serializable
 data class UsageRecordEntity(
+    @ColumnInfo(name = "sync_id", defaultValue = "''")
+    val syncId: String = kotlin.uuid.Uuid.random().toString(),
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     @ColumnInfo("created_at")
