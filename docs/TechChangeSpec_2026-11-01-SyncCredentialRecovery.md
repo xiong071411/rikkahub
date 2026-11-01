@@ -8,7 +8,7 @@
 - 同步失败保留具体阶段及异常原因，无消息时显示异常类型；同步设置页持续显示错误和待处理工作区，取消操作仍正常传播。
 - 本地工作区继续只同步配置，SSH 密码、私钥及私钥口令继续传输后在接收设备重新加密。
 
-Android 测试和九包编译由 GitHub CI 执行，本机不运行 Gradle。本轮不修改后端及数据库结构。完成后补充 CI、产物和门户验收结果。
+Android 测试和九包编译由 GitHub CI 执行，本机不运行 Gradle。本轮不修改后端及数据库结构。
 
 更新内容:
 
@@ -19,3 +19,12 @@ Updates:
 
 - Fix sync after restoring backups
 - Show sync failure details
+
+## 验证与发布结果
+
+- GitHub CI [41309077619](https://github.com/xiong071411/rikkahub/actions/runs/41309077619) 成功，构建源提交 `cb48dbab97dae32fefb5aa4efdaeb695a3cf42cd`；12 份测试报告共 89 项通过，无失败、错误或跳过。
+- 新增 4 项回归测试覆盖异机恢复后密码及私钥不可读、会话继续同步、暂存远端工作区和修复后的冲突保护、旧队列及删除保护，以及无消息异常的阶段和类型提示。CI 导出的第 34 版数据库结构与仓库逐字一致。
+- github / coexist / coexistNormal 各提供 armeabi-v7a、arm64-v8a、Universal，共九包，均通过版本、包名、签名、架构和原生库检查。签名沿用既有证书，支持同变体覆盖安装。
+- 已发布至 http://45.207.200.189:8088/ ，九包及 13 个常用下载别名通过公网完整下载和 SHA-256 校验；同变体各架构包的 DEX 和原生库一致，门户其他区域及历史归档逐字保留。
+- 安装包、混淆映射和测试报告保存在 `/root/rikkahub-release-audit/build203-ci`，门户回滚备份位于 `/root/rikkahub-release-audit/build203-portal-backup`，公开验收记录为 `/root/rikkahub-release-audit/build203-public-verification.json`。
+- 尚未取得用户真机错误栈或完成真机复测；若设备仍失败，新版页面保留的具体阶段和原因可用于进一步定位。不可解密工作区需要在设备设置中重新填写 SSH 凭据，其他内容可以继续同步。
