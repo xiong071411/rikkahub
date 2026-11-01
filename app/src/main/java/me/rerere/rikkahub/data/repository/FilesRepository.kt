@@ -16,14 +16,17 @@ class FilesRepository(
     private val dao: ManagedFileDAO,
     private val recorder: SyncMutationRecorder? = null,
 ) {
-    suspend fun insert(file: ManagedFileEntity): ManagedFileEntity {
+    private suspend fun <T> mutate(block: suspend () -> T): T =
+        if (recorder == null) block() else recorder.runInTransaction(block)
+
+    suspend fun insert(file: ManagedFileEntity): ManagedFileEntity = mutate {
         val id = dao.insert(file)
         val saved = file.copy(id = id)
         record(saved)
-        return saved
+        saved
     }
 
-    suspend fun update(file: ManagedFileEntity) {
+    suspend fun update(file: ManagedFileEntity) = mutate {
         dao.update(file)
         record(file)
     }
@@ -50,18 +53,18 @@ class FilesRepository(
         recorder?.recordDelete("file_asset", key)
     }
 
-    suspend fun deleteById(id: Long): Int {
+    suspend fun deleteById(id: Long): Int = mutate {
         dao.getById(id)?.let { recordDelete(it) }
-        return dao.deleteById(id)
+        dao.deleteById(id)
     }
 
-    suspend fun deleteByPath(relativePath: String, syncDelete: Boolean = true): Int {
+    suspend fun deleteByPath(relativePath: String, syncDelete: Boolean = true): Int = mutate {
         if (syncDelete) dao.getByPath(relativePath)?.let { recordDelete(it) }
-        return dao.deleteByPath(relativePath)
+        dao.deleteByPath(relativePath)
     }
 
-    suspend fun deleteByFolder(folder: String): Int {
+    suspend fun deleteByFolder(folder: String): Int = mutate {
         dao.listByFolder(folder).first().forEach { recordDelete(it) }
-        return dao.deleteByFolder(folder)
+        dao.deleteByFolder(folder)
     }
 }

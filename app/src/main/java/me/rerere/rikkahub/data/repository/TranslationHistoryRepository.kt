@@ -13,12 +13,15 @@ class TranslationHistoryRepository(
 ) {
     fun pagingAll(): PagingSource<Int, TranslationHistoryEntity> = dao.pagingAll()
 
+    private suspend fun <T> mutate(block: suspend () -> T): T =
+        if (recorder == null) block() else recorder.runInTransaction(block)
+
     suspend fun add(
         sourceText: String,
         translatedText: String,
         targetLanguage: String,
         modelId: Uuid,
-    ) {
+    ) = mutate {
         val entity = TranslationHistoryEntity(
             id = Uuid.random().toString(),
             sourceText = sourceText,
@@ -36,12 +39,12 @@ class TranslationHistoryRepository(
         dao.trimTo(MAX_HISTORY_COUNT)
     }
 
-    suspend fun deleteById(id: String) {
+    suspend fun deleteById(id: String) = mutate {
         recorder?.recordDelete("translation_history", id)
         dao.deleteById(id)
     }
 
-    suspend fun deleteAll() {
+    suspend fun deleteAll() = mutate {
         recorder?.recordDeleteAll("translation_history", dao.getAllHistory().map { it.id })
         dao.deleteAll()
     }

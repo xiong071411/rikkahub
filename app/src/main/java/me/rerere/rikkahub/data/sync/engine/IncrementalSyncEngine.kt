@@ -1043,7 +1043,8 @@ class IncrementalSyncEngine(
                 existingOutbox?.let { syncV2Dao.deleteOutboxByMutationId(it.mutationId) }
             } else {
                 // remote delete
-                if (localJson != null && existingOutbox?.operation == "upsert") {
+                if (localJson != null &&
+                    (existingOutbox?.operation == "upsert" || change.entity_type in ExtendedSyncTypes.all)) {
                     saveLocalConflictRecord(
                         conflictId = "reconcile-del-${change.entity_type}-${change.entity_id}-${change.revision}",
                         entityType = change.entity_type,
@@ -1728,6 +1729,7 @@ class IncrementalSyncEngine(
                     logWarn("Skipping orphan media_record ${dto.id} because parent session/node is absent")
                 }
             }
+            else -> error("当前客户端不支持该同步实体：$entityType")
         }
     }
 
@@ -1770,6 +1772,7 @@ class IncrementalSyncEngine(
             "media_session" -> {
                 mediaCreationDAO.deleteSession(entityId)
             }
+            else -> error("当前客户端不支持该同步实体：$entityType")
         }
     }
 
@@ -1948,7 +1951,7 @@ class IncrementalSyncEngine(
         val downloadQueue = syncV2Dao.getFileQueueByDirection("download")
         downloadQueue.forEachIndexed { idx, item ->
             val relPath = item.relativePath
-            if (!AttachmentPathNormalizer.isManagedRelativePath(relPath)) {
+            if (!AttachmentPathNormalizer.isManagedRelativePath(relPath) || relPath in coveredTargets) {
                 syncV2Dao.deleteFileQueue("download", relPath)
                 return@forEachIndexed
             }

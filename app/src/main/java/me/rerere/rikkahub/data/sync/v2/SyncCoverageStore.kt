@@ -305,7 +305,9 @@ class SyncCoverageStore(
                 require(id in ExtendedSyncTypes.sharedPreferenceKeys)
                 preferences.edit(commit = true) { remove(id) }
             }
-            "skill_bundle", "file_asset" -> dao.resource(type, id)?.let {
+            "skill_bundle", "file_asset" -> (dao.resource(type, id) ?: snapshot()[type to id]?.let {
+                SyncResourceEntity(type, id, it)
+            })?.let {
                 if (type == "skill_bundle") {
                     val bundle = json.decodeFromString<SkillBundleSyncPayload>(it.payload).validate()
                     File(filesDir, "skills/${bundle.directory}").deleteRecursively()
@@ -325,6 +327,13 @@ class SyncCoverageStore(
     override suspend fun confirmLocal(type: String, id: String, payload: String?) {
         if (type !in setOf("skill_bundle", "file_asset")) return
         if (payload != null) {
+            val pending = dao.resource(type, id)
+            if (pending != null && !pending.deleted && pending.materializedHash.isEmpty() &&
+                CanonicalSyncHash.computeSemanticHash(type, pending.payload) ==
+                CanonicalSyncHash.computeSemanticHash(type, payload)) {
+                // 用户选用冲突副本后，推送确认可能早于字节落地；不能把旧磁盘内容再排队覆盖选定版本。
+                return
+            }
             dao.putResource(SyncResourceEntity(type, id, payload, CanonicalSyncHash.computeSemanticHash(type, payload)))
             val latest = currentResource(type, payload)
             if (latest != payload &&

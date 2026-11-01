@@ -4,11 +4,18 @@ import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
 import androidx.room.Room
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.entity.UsageRecordEntity
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
+import me.rerere.rikkahub.data.db.migrations.Migration_33_34
 import me.rerere.rikkahub.data.model.SshWorkspaceSettings
 import me.rerere.rikkahub.utils.JsonInstant
 import org.junit.After
@@ -159,5 +166,99 @@ class SyncCoverageStoreTest {
         repeat(3) { target.apply(entry.key.first, entry.key.second, entry.value) }
         assertEquals(2, targetDb.syncCoverageDao().usage().size)
         assertEquals(30L, targetDb.usageRecordDao().getTotals().promptTokens)
+    }
+
+    @Test
+    fun `schema 33 migrates without data loss and generates stable ids across restored backups`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val schema = javaClass.classLoader!!.getResourceAsStream(
+            "me.rerere.rikkahub.data.db.AppDatabase/33.json"
+        )!!.bufferedReader().use {
+            JsonInstant.parseToJsonElement(
+                it.readText()
+            ).jsonObject.getValue("database").jsonObject
+        }
+        suspend fun migrate(name: String, firstId: Int): List<String> {
+            val helper = FrameworkSQLiteOpenHelperFactory().create(
+                SupportSQLiteOpenHelper.Configuration.builder(context).name(name)
+                    .callback(object : SupportSQLiteOpenHelper.Callback(33) {
+                        override fun onCreate(db: SupportSQLiteDatabase) {
+                            schema.getValue("entities").jsonArray.forEach { element ->
+                                val entity = element.jsonObject
+                                val table = entity.getValue("tableName").jsonPrimitive.content
+                                db.execSQL(
+                                    entity.getValue("createSql").jsonPrimitive.content.replace("\${TABLE_NAME}", table)
+                                )
+                                entity.getValue("indices").jsonArray.forEach {
+                                    db.execSQL(
+                                        it.jsonObject.getValue(
+                                            "createSql"
+                                        ).jsonPrimitive.content.replace("\${TABLE_NAME}", table)
+                                    )
+                                }
+                            }
+                            schema.getValue("setupQueries").jsonArray.forEach { db.execSQL(it.jsonPrimitive.content) }
+                            repeat(2) { offset ->
+                                db.execSQL(
+                                    "INSERT INTO usage_record (id, created_at, source, prompt_tokens, completion_tokens, cached_tokens) VALUES (?, 10, 'CHAT', 7, 2, 0)",
+                                    arrayOf(firstId + offset)
+                                )
+                                db.execSQL(
+                                    "INSERT INTO genmediaentity (id, path, model_id, prompt, create_at, type) VALUES (?, 'images/example.png', 'model', 'prompt', 10, 'image_generation')",
+                                    arrayOf(firstId + offset)
+                                )
+                            }
+                        }
+                        override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+                    }).build()
+            )
+            helper.writableDatabase
+            helper.close()
+            val db = Room.databaseBuilder(context, AppDatabase::class.java, name)
+                .allowMainThreadQueries().addMigrations(Migration_33_34).build()
+            databases.add(db)
+            val usage = db.syncCoverageDao().usage()
+            val media = db.syncCoverageDao().generatedMedia()
+            assertEquals(2, usage.size)
+            assertEquals(2, media.size)
+            assertEquals(2, usage.map { it.syncId }.toSet().size)
+            assertEquals(14L, db.usageRecordDao().getTotals().promptTokens)
+            assertTrue(db.syncCoverageDao().resources().isEmpty())
+            return usage.map { it.syncId } + media.map { it.syncId }
+        }
+        assertEquals(migrate("old-phone", 1), migrate("restored-watch", 91))
+    }
+
+    @Test
+    fun `first received deletion suppresses old local asset without removing referenced bytes`() = runBlocking {
+        val (files, _, store) = device("device")
+        val file = File(files, "upload/old.txt").apply {
+            parentFile!!.mkdirs()
+            writeText("old")
+        }
+        store.apply("file_asset", SyncCoverageStore.pathId("upload/old.txt"), null)
+        assertTrue(file.isFile)
+        assertTrue(store.snapshot().keys.none { it.first == "file_asset" })
+    }
+
+    @Test
+    fun `confirming a selected conflict version waits for its bytes without reuploading old disk content`() = runBlocking {
+        val (sourceFiles, _, source) = device("source")
+        val (targetFiles, targetDb, target) = device("target")
+        File(sourceFiles, "upload/data.txt").apply {
+            parentFile!!.mkdirs()
+            writeText("chosen conflict")
+        }
+        File(targetFiles, "upload/data.txt").apply {
+            parentFile!!.mkdirs()
+            writeText("old authoritative")
+        }
+        val entry = source.snapshot().entries.single { it.key.first == "file_asset" }
+        target.apply(entry.key.first, entry.key.second, entry.value)
+        target.confirmLocal(entry.key.first, entry.key.second, entry.value)
+        assertTrue(targetDb.syncV2Dao().getAllOutboxOrdered().isEmpty())
+        File(sourceFiles, "sync_blobs").copyRecursively(File(targetFiles, "sync_blobs"), overwrite = true)
+        target.materializeResources()
+        assertEquals("chosen conflict", File(targetFiles, "upload/data.txt").readText())
     }
 }
