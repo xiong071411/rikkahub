@@ -25,7 +25,7 @@ object Migration_33_34 : Migration(33, 34) {
                     ).toString()
                     db.execSQL(
                         "UPDATE $table SET sync_id = ? WHERE id = ?",
-                        arrayOf(id, cursor.getLong(cursor.getColumnIndexOrThrow("id")))
+                        arrayOf<Any>(id, cursor.getLong(cursor.getColumnIndexOrThrow("id")))
                     )
                 }
             }
