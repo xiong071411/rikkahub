@@ -5,11 +5,13 @@ import androidx.paging.PagingSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
@@ -157,6 +159,7 @@ class SyncV2EngineTest {
             okHttpClient = okHttp,
             coverage = extended,
             pullPageLimit = 2, // 故意设为每页 2 条以覆盖多页游标与快照上界测试
+            appScope = storeScope,
         )
     }
 
@@ -727,6 +730,41 @@ class SyncV2EngineTest {
         )
         engine.sync(defaultConfig).getOrThrow()
         assertTrue(settingsStore.awaitLoaded().displaySetting.messageJumperOnLeft)
+    }
+
+    @Test
+    fun `background sync continues to completion when caller UI scope is cancelled`() = runBlocking {
+        val localConv = sampleConversation("后台同步不中断会话", "退出页面后仍应完成推送")
+        conversationBridge.saveUserLocalEdit(localConv)
+
+        val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        var completedSummary: me.rerere.rikkahub.data.sync.engine.SyncSummary? = null
+
+        server.onBeforePush = {
+            // 模拟用户在同步推进到推送阶段时退出同步界面（销毁 UI 作用域）
+            assertTrue(engine.isSyncing.value)
+            uiScope.cancel()
+        }
+
+        val uiWaiter = uiScope.launch {
+            engine.awaitBackgroundSync(defaultConfig)
+        }
+        val bgDeferred = engine.startBackgroundSync(defaultConfig) { result ->
+            completedSummary = result.getOrNull()
+        }
+
+        val summary = bgDeferred.await().getOrThrow()
+        uiWaiter.join()
+
+        assertTrue(uiWaiter.isCancelled)
+        assertFalse(engine.isSyncing.value)
+        assertEquals(null, engine.syncErrorMessage.value)
+        assertEquals(1, summary.pushedConversations)
+        assertNotNull(server.entities["conversation" to localConv.id.toString()])
+        assertTrue(summary.toToastMessage().contains("同步完成"))
+        // 等待回调在 storeScope 中投递完成
+        val awaitedCallback = completedSummary ?: summary
+        assertEquals(summary.currentRevision, awaitedCallback.currentRevision)
     }
 
     private fun sampleConversation(title: String, userText: String): Conversation = Conversation(

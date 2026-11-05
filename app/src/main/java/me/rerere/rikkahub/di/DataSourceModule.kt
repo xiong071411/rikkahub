@@ -325,6 +325,7 @@ val dataSourceModule = module {
             okHttpClient = get(),
             lazyChatService = lazy { get() },
             sshPool = get(),
+            appScope = get<AppScope>(),
         )
     }
 

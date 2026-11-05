@@ -5,9 +5,17 @@ import android.os.Build
 import android.util.Log
 import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -224,7 +232,19 @@ data class SyncSummary(
     val currentRevision: Long = 0L,
     val serverTimestamp: Long,
     val warnings: List<String> = emptyList(),
-)
+) {
+    fun toToastMessage(): String {
+        if (warnings.isNotEmpty()) {
+            return "其他数据已同步，${warnings.size} 个工作区需要处理，请查看页面提示"
+        }
+        val conflictSuffix = if (conflictsDetected > 0) {
+            "，保护冲突 $conflictsDetected 项"
+        } else {
+            ""
+        }
+        return "同步完成 (Rev #$currentRevision)：拉取 $pulledConversations 条、推送 $pushedConversations 条$conflictSuffix"
+    }
+}
 
 /**
  * 会话与文件夹同步本地访问桥接接口。
@@ -327,6 +347,7 @@ class IncrementalSyncEngine(
     private val pullPageLimit: Int = PULL_PAGE_LIMIT,
     private val json: Json = JsonInstant,
     private val coverage: SyncCoverage? = null,
+    private val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) {
     constructor(
         context: Context,
@@ -347,6 +368,7 @@ class IncrementalSyncEngine(
         lazyChatService: Lazy<ChatService>? = null,
         json: Json = JsonInstant,
         sshPool: me.rerere.workspace.ssh.SshConnectionPool? = null,
+        appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     ) : this(
         localFilesDir = context.filesDir,
         database = database,
@@ -368,9 +390,26 @@ class IncrementalSyncEngine(
         pullPageLimit = PULL_PAGE_LIMIT,
         json = json,
         coverage = SyncCoverageStore(context, database, sshPool),
+        appScope = appScope,
     )
 
     private val syncMutex = Mutex()
+    private val backgroundJobLock = Any()
+
+    @Volatile
+    private var activeBackgroundJob: Deferred<Result<SyncSummary>>? = null
+
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
+
+    private val _syncStatusMessage = MutableStateFlow("")
+    val syncStatusMessage: StateFlow<String> = _syncStatusMessage.asStateFlow()
+
+    private val _syncErrorMessage = MutableStateFlow<String?>(null)
+    val syncErrorMessage: StateFlow<String?> = _syncErrorMessage.asStateFlow()
+
+    private val _syncWarnings = MutableStateFlow<List<String>>(emptyList())
+    val syncWarnings: StateFlow<List<String>> = _syncWarnings.asStateFlow()
 
     private val defaultDeviceName: String by lazy {
         val mfr = runCatching { Build.MANUFACTURER }.getOrNull().orEmpty()
@@ -504,6 +543,49 @@ class IncrementalSyncEngine(
     }
 
     /**
+     * 在应用级全局作用域后台启动增量同步，不随页面切换或 ViewModel 销毁而取消。
+     * 若已有同步任务正在执行，则直接复用当前任务。
+     */
+    fun startBackgroundSync(
+        config: SyncServerConfig = settingsStore.settingsFlow.value.syncServerConfig,
+        onComplete: ((Result<SyncSummary>) -> Unit)? = null,
+    ): Deferred<Result<SyncSummary>> {
+        val deferred = synchronized(backgroundJobLock) {
+            val current = activeBackgroundJob
+            if (current != null && current.isActive) {
+                current
+            } else {
+                _isSyncing.value = true
+                _syncErrorMessage.value = null
+                _syncWarnings.value = emptyList()
+                _syncStatusMessage.value = "准备同步..."
+                appScope.async(Dispatchers.IO) {
+                    sync(config)
+                }.also { created ->
+                    activeBackgroundJob = created
+                }
+            }
+        }
+        if (onComplete != null) {
+            appScope.launch {
+                val result = runCatching { deferred.await() }.getOrElse { Result.failure(it) }
+                onComplete(result)
+            }
+        }
+        return deferred
+    }
+
+    /**
+     * 在后台启动增量同步并等待完成；即使调用方协程（如页面或 ViewModel）中途取消，
+     * 后台同步协程仍会在应用级作用域内继续完成，不会中断或回滚。
+     */
+    suspend fun awaitBackgroundSync(
+        config: SyncServerConfig = settingsStore.settingsFlow.value.syncServerConfig,
+    ): SyncSummary {
+        return startBackgroundSync(config).await().getOrThrow()
+    }
+
+    /**
      * 执行完整的 Sync V2 增量同步闭环。
      */
     suspend fun sync(
@@ -513,240 +595,252 @@ class IncrementalSyncEngine(
         var stage = "准备同步"
         val reportProgress: (String) -> Unit = { message ->
             stage = message
+            _syncStatusMessage.value = message
             onProgress(message)
         }
         runCatching {
             syncMutex.withLock {
-                val (baseUrl, token) = validateConfigOrThrow(config)
-                val clientDeviceId = getOrCreateClientDeviceId(config)
-                val clientDeviceName = resolveDeviceName(config)
+                _isSyncing.value = true
+                _syncErrorMessage.value = null
+                _syncWarnings.value = emptyList()
+                _syncStatusMessage.value = "准备同步..."
+                try {
+                    val (baseUrl, token) = validateConfigOrThrow(config)
+                    val clientDeviceId = getOrCreateClientDeviceId(config)
+                    val clientDeviceName = resolveDeviceName(config)
 
-                reportProgress("正在验证 Sync V2 服务器与修订基线...")
-                val serverInfo = fetchServerInfo(baseUrl, token)
-                require("memory_file" in serverInfo.supported_entity_types) {
-                    "服务端尚未支持记忆与完整偏好同步，请先升级服务端（客户端至少需要记忆同步能力）"
-                }
+                    reportProgress("正在验证 Sync V2 服务器与修订基线...")
+                    val serverInfo = fetchServerInfo(baseUrl, token)
+                    require("memory_file" in serverInfo.supported_entity_types) {
+                        "服务端尚未支持记忆与完整偏好同步，请先升级服务端（客户端至少需要记忆同步能力）"
+                    }
 
-                if (coverage != null) {
-                    val missing = ExtendedSyncTypes.all - serverInfo.supported_entity_types.toSet()
-                    require(missing.isEmpty()) { "请先升级同步服务端，缺少同步能力：${missing.joinToString()}" }
-                }
+                    if (coverage != null) {
+                        val missing = ExtendedSyncTypes.all - serverInfo.supported_entity_types.toSet()
+                        require(missing.isEmpty()) { "请先升级同步服务端，缺少同步能力：${missing.joinToString()}" }
+                    }
 
-                // 0. 检查 server_id 是否变化（如切换到新服务器或服务端重建了数据库）
-                val storedServerId = syncV2Dao.getMetaValue(META_SERVER_ID)
-                var cursor = syncV2Dao.getMetaValue(META_CURSOR)?.toLongOrNull() ?: 0L
-                var isReconciled = syncV2Dao.getMetaValue(META_V2_RECONCILED) == "1"
+                    // 0. 检查 server_id 是否变化（如切换到新服务器或服务端重建了数据库）
+                    val storedServerId = syncV2Dao.getMetaValue(META_SERVER_ID)
+                    var cursor = syncV2Dao.getMetaValue(META_CURSOR)?.toLongOrNull() ?: 0L
+                    var isReconciled = syncV2Dao.getMetaValue(META_V2_RECONCILED) == "1"
 
-                if (!storedServerId.isNullOrBlank() && storedServerId != serverInfo.server_id) {
-                    logWarn(
-                        "Server ID changed ($storedServerId -> ${serverInfo.server_id}), resetting local sync baseline"
-                    )
-                    runInTransaction {
-                        syncV2Dao.clearAllEntityStates()
+                    if (!storedServerId.isNullOrBlank() && storedServerId != serverInfo.server_id) {
+                        logWarn(
+                            "Server ID changed ($storedServerId -> ${serverInfo.server_id}), resetting local sync baseline"
+                        )
+                        runInTransaction {
+                            syncV2Dao.clearAllEntityStates()
+                            syncV2Dao.upsertMeta(SyncMetaEntity(META_SERVER_ID, serverInfo.server_id))
+                            syncV2Dao.upsertMeta(SyncMetaEntity(META_CURSOR, "0"))
+                            syncV2Dao.upsertMeta(SyncMetaEntity(META_V2_RECONCILED, "0"))
+                        }
+                        cursor = 0L
+                        isReconciled = false
+                    } else if (storedServerId.isNullOrBlank()) {
                         syncV2Dao.upsertMeta(SyncMetaEntity(META_SERVER_ID, serverInfo.server_id))
-                        syncV2Dao.upsertMeta(SyncMetaEntity(META_CURSOR, "0"))
-                        syncV2Dao.upsertMeta(SyncMetaEntity(META_V2_RECONCILED, "0"))
                     }
-                    cursor = 0L
-                    isReconciled = false
-                } else if (storedServerId.isNullOrBlank()) {
-                    syncV2Dao.upsertMeta(SyncMetaEntity(META_SERVER_ID, serverInfo.server_id))
-                }
 
-                // 197 可能已忽略新实体但推进游标；升级后重新读取一次云端完整基线，不清空本地队列或内容。
-                if (syncV2Dao.getMetaValue(META_COVERAGE) != SyncSettingsContract.COVERAGE_VERSION) {
-                    cursor = 0L
-                    isReconciled = false
-                    // 197 会确认自己不认识的记忆实体却不保存正文。仅重置游标仍会因哈希相同跳过应用，
-                    // 随后的删除扫描还可能误删云端记忆；保留修订和待推队列，仅废弃这些未落地实体的哈希。
-                    syncV2Dao.getEntityStatesByType("memory_file").forEach { state ->
-                        syncV2Dao.upsertEntityState(state.copy(lastSyncedHash = ""))
+                    // 197 可能已忽略新实体但推进游标；升级后重新读取一次云端完整基线，不清空本地队列或内容。
+                    if (syncV2Dao.getMetaValue(META_COVERAGE) != SyncSettingsContract.COVERAGE_VERSION) {
+                        cursor = 0L
+                        isReconciled = false
+                        // 197 会确认自己不认识的记忆实体却不保存正文。仅重置游标仍会因哈希相同跳过应用，
+                        // 随后的删除扫描还可能误删云端记忆；保留修订和待推队列，仅废弃这些未落地实体的哈希。
+                        syncV2Dao.getEntityStatesByType("memory_file").forEach { state ->
+                            syncV2Dao.upsertEntityState(state.copy(lastSyncedHash = ""))
+                        }
                     }
-                }
 
-                reportProgress("正在检查工作区凭据...")
-                coverage?.refreshAvailability()
-                // Step 0a: 重试暂存变更；重新可读的工作区可能需要先保护本地差异。
-                val conflictsBeforeDrain = syncV2Dao.getUnresolvedConflicts().size
-                drainReadyInboxPending()
+                    reportProgress("正在检查工作区凭据...")
+                    coverage?.refreshAvailability()
+                    // Step 0a: 重试暂存变更；重新可读的工作区可能需要先保护本地差异。
+                    val conflictsBeforeDrain = syncV2Dao.getUnresolvedConflicts().size
+                    drainReadyInboxPending()
 
-                var pulledConvCount = 0
-                var syncedAssistantsCount = 0
-                var syncedProvidersCount = 0
-                var conflictsCount = (syncV2Dao.getUnresolvedConflicts().size - conflictsBeforeDrain).coerceAtLeast(0)
-                val referencedRemoteFiles = LinkedHashSet<String>()
+                    var pulledConvCount = 0
+                    var syncedAssistantsCount = 0
+                    var syncedProvidersCount = 0
+                    var conflictsCount = (syncV2Dao.getUnresolvedConflicts().size - conflictsBeforeDrain).coerceAtLeast(0)
+                    val referencedRemoteFiles = LinkedHashSet<String>()
 
-                if (!isReconciled || cursor == 0L) {
-                    // ---- 首次 V2 基线对账模式（兼容 V1 老用户无损平滑升级与新设备首次全量拉取） ----
-                    reportProgress("正在执行 Sync V2 首次基线对账...")
-                    val reconcileStats = pullAndReconcileInitialBaseline(
-                        baseUrl = baseUrl,
-                        token = token,
-                        deviceId = clientDeviceId,
-                        deviceName = clientDeviceName,
-                        serverId = serverInfo.server_id,
-                        targetRevision = serverInfo.current_revision,
-                        onProgress = reportProgress,
-                    )
-                    pulledConvCount += reconcileStats.pulledConversations
-                    syncedAssistantsCount += reconcileStats.syncedAssistants
-                    syncedProvidersCount += reconcileStats.syncedProviders
-                    conflictsCount += reconcileStats.conflicts
-                    referencedRemoteFiles.addAll(reconcileStats.referencedFiles)
-                    cursor = reconcileStats.newCursor
+                    if (!isReconciled || cursor == 0L) {
+                        // ---- 首次 V2 基线对账模式（兼容 V1 老用户无损平滑升级与新设备首次全量拉取） ----
+                        reportProgress("正在执行 Sync V2 首次基线对账...")
+                        val reconcileStats = pullAndReconcileInitialBaseline(
+                            baseUrl = baseUrl,
+                            token = token,
+                            deviceId = clientDeviceId,
+                            deviceName = clientDeviceName,
+                            serverId = serverInfo.server_id,
+                            targetRevision = serverInfo.current_revision,
+                            onProgress = reportProgress,
+                        )
+                        pulledConvCount += reconcileStats.pulledConversations
+                        syncedAssistantsCount += reconcileStats.syncedAssistants
+                        syncedProvidersCount += reconcileStats.syncedProviders
+                        conflictsCount += reconcileStats.conflicts
+                        referencedRemoteFiles.addAll(reconcileStats.referencedFiles)
+                        cursor = reconcileStats.newCursor
 
-                    // 对账完成后，扫描本地独有的实体（如服务端尚不存在的新会话、生图节点与生图记录）入队待推
-                    reportProgress("正在扫描本地独有对话与创作记录...")
-                    enqueueLocalDiffIntoOutbox(includeRoomEntities = true)
-                } else {
-                    // ---- 常规 Sync V2 增量同步模式 ----
-                    // Step 0b: 在拉取前先把 Settings 修改/删除及任何未入队的本地修改固化进 sync_outbox，保留各自的旧 baseRevision
-                    reportProgress("正在检查本地未同步变更...")
-                    enqueueLocalDiffIntoOutbox(includeRoomEntities = true)
+                        // 对账完成后，扫描本地独有的实体（如服务端尚不存在的新会话、生图节点与生图记录）入队待推
+                        reportProgress("正在扫描本地独有对话与创作记录...")
+                        enqueueLocalDiffIntoOutbox(includeRoomEntities = true)
+                    } else {
+                        // ---- 常规 Sync V2 增量同步模式 ----
+                        // Step 0b: 在拉取前先把 Settings 修改/删除及任何未入队的本地修改固化进 sync_outbox，保留各自的旧 baseRevision
+                        reportProgress("正在检查本地未同步变更...")
+                        enqueueLocalDiffIntoOutbox(includeRoomEntities = true)
 
-                    // Step 1: 锁定 upper_bound_revision 分页拉取云端增量
-                    if (serverInfo.current_revision > cursor) {
-                        reportProgress("正在分页拉取云端增量修订...")
-                        val pullStats = pullIncrementalChanges(
+                        // Step 1: 锁定 upper_bound_revision 分页拉取云端增量
+                        if (serverInfo.current_revision > cursor) {
+                            reportProgress("正在分页拉取云端增量修订...")
+                            val pullStats = pullIncrementalChanges(
+                                baseUrl = baseUrl,
+                                token = token,
+                                deviceId = clientDeviceId,
+                                deviceName = clientDeviceName,
+                                serverId = serverInfo.server_id,
+                                startCursor = cursor,
+                                upperBoundRevision = serverInfo.current_revision,
+                                onProgress = reportProgress,
+                            )
+                            if (pullStats.resetRequired) {
+                                // 服务端修订日志已被裁剪，自动回退做一次无损全量对账
+                                logWarn("Server requested cursor reset, running baseline reconciliation")
+                                val rec = pullAndReconcileInitialBaseline(
+                                    baseUrl = baseUrl,
+                                    token = token,
+                                    deviceId = clientDeviceId,
+                                    deviceName = clientDeviceName,
+                                    serverId = serverInfo.server_id,
+                                    targetRevision = serverInfo.current_revision,
+                                    onProgress = reportProgress,
+                                )
+                                pulledConvCount += rec.pulledConversations
+                                syncedAssistantsCount += rec.syncedAssistants
+                                syncedProvidersCount += rec.syncedProviders
+                                conflictsCount += rec.conflicts
+                                referencedRemoteFiles.addAll(rec.referencedFiles)
+                                cursor = rec.newCursor
+                                enqueueLocalDiffIntoOutbox(includeRoomEntities = true)
+                            } else {
+                                pulledConvCount += pullStats.pulledConversations
+                                syncedAssistantsCount += pullStats.syncedAssistants
+                                syncedProvidersCount += pullStats.syncedProviders
+                                referencedRemoteFiles.addAll(pullStats.referencedFiles)
+                                cursor = pullStats.newCursor
+                            }
+                        }
+                    }
+
+                    // Step 2: 按外键拓扑顺序分批推送本地 sync_outbox
+                    val outboxEntries = syncV2Dao.getAllOutboxOrdered()
+                        .filterNot { isUnavailable(it.entityType, it.entityId) }
+                        .sortedWith(compareBy({ entityPushPriority[it.entityType] ?: 99 }, { it.id }))
+
+                    var pushedConvCount = 0
+                    var latestKnownRevision = cursor
+
+                    if (outboxEntries.isNotEmpty()) {
+                        val batches = outboxEntries.chunked(PUSH_BATCH_LIMIT)
+                        batches.forEachIndexed { batchIdx, batch ->
+                            reportProgress("正在推送本地变更 (${batchIdx + 1}/${batches.size})...")
+                            val pushOutcome = pushOutboxBatch(
+                                baseUrl = baseUrl,
+                                token = token,
+                                deviceId = clientDeviceId,
+                                deviceName = clientDeviceName,
+                                serverId = serverInfo.server_id,
+                                batch = batch,
+                            )
+                            pushedConvCount += pushOutcome.pushedConversations
+                            syncedAssistantsCount += pushOutcome.pushedAssistants
+                            syncedProvidersCount += pushOutcome.pushedProviders
+                            conflictsCount += pushOutcome.conflicts
+                            referencedRemoteFiles.addAll(pushOutcome.conflictServerFiles)
+                            if (pushOutcome.currentRevision > latestKnownRevision) {
+                                latestKnownRevision = pushOutcome.currentRevision
+                            }
+                        }
+
+                        // Push 后如果 cursor 和最新 revision 之间没有穿插其他设备的变更，顺带对齐一次增量游标
+                        val finalPull = pullIncrementalChanges(
                             baseUrl = baseUrl,
                             token = token,
                             deviceId = clientDeviceId,
                             deviceName = clientDeviceName,
                             serverId = serverInfo.server_id,
                             startCursor = cursor,
-                            upperBoundRevision = serverInfo.current_revision,
-                            onProgress = reportProgress,
+                            upperBoundRevision = latestKnownRevision,
+                            onProgress = {},
                         )
-                        if (pullStats.resetRequired) {
-                            // 服务端修订日志已被裁剪，自动回退做一次无损全量对账
-                            logWarn("Server requested cursor reset, running baseline reconciliation")
-                            val rec = pullAndReconcileInitialBaseline(
-                                baseUrl = baseUrl,
-                                token = token,
-                                deviceId = clientDeviceId,
-                                deviceName = clientDeviceName,
-                                serverId = serverInfo.server_id,
-                                targetRevision = serverInfo.current_revision,
-                                onProgress = reportProgress,
-                            )
-                            pulledConvCount += rec.pulledConversations
-                            syncedAssistantsCount += rec.syncedAssistants
-                            syncedProvidersCount += rec.syncedProviders
-                            conflictsCount += rec.conflicts
-                            referencedRemoteFiles.addAll(rec.referencedFiles)
-                            cursor = rec.newCursor
-                            enqueueLocalDiffIntoOutbox(includeRoomEntities = true)
-                        } else {
-                            pulledConvCount += pullStats.pulledConversations
-                            syncedAssistantsCount += pullStats.syncedAssistants
-                            syncedProvidersCount += pullStats.syncedProviders
-                            referencedRemoteFiles.addAll(pullStats.referencedFiles)
-                            cursor = pullStats.newCursor
-                        }
-                    }
-                }
-
-                // Step 2: 按外键拓扑顺序分批推送本地 sync_outbox
-                val outboxEntries = syncV2Dao.getAllOutboxOrdered()
-                    .filterNot { isUnavailable(it.entityType, it.entityId) }
-                    .sortedWith(compareBy({ entityPushPriority[it.entityType] ?: 99 }, { it.id }))
-
-                var pushedConvCount = 0
-                var latestKnownRevision = cursor
-
-                if (outboxEntries.isNotEmpty()) {
-                    val batches = outboxEntries.chunked(PUSH_BATCH_LIMIT)
-                    batches.forEachIndexed { batchIdx, batch ->
-                        reportProgress("正在推送本地变更 (${batchIdx + 1}/${batches.size})...")
-                        val pushOutcome = pushOutboxBatch(
-                            baseUrl = baseUrl,
-                            token = token,
-                            deviceId = clientDeviceId,
-                            deviceName = clientDeviceName,
-                            serverId = serverInfo.server_id,
-                            batch = batch,
-                        )
-                        pushedConvCount += pushOutcome.pushedConversations
-                        syncedAssistantsCount += pushOutcome.pushedAssistants
-                        syncedProvidersCount += pushOutcome.pushedProviders
-                        conflictsCount += pushOutcome.conflicts
-                        referencedRemoteFiles.addAll(pushOutcome.conflictServerFiles)
-                        if (pushOutcome.currentRevision > latestKnownRevision) {
-                            latestKnownRevision = pushOutcome.currentRevision
+                        if (!finalPull.resetRequired) {
+                            pulledConvCount += finalPull.pulledConversations
+                            referencedRemoteFiles.addAll(finalPull.referencedFiles)
+                            cursor = finalPull.newCursor
                         }
                     }
 
-                    // Push 后如果 cursor 和最新 revision 之间没有穿插其他设备的变更，顺带对齐一次增量游标
-                    val finalPull = pullIncrementalChanges(
+                    // Step 3: 附件校验、上传与原子下载（含断点重试队列 sync_file_queue）
+                    val conflictsBeforeFiles = syncV2Dao.getUnresolvedConflicts().size
+                    val syncedFilesCount = syncAttachments(
                         baseUrl = baseUrl,
                         token = token,
-                        deviceId = clientDeviceId,
-                        deviceName = clientDeviceName,
-                        serverId = serverInfo.server_id,
-                        startCursor = cursor,
-                        upperBoundRevision = latestKnownRevision,
-                        onProgress = {},
+                        syncFilesEnabled = config.syncFiles,
+                        newlyReferencedRelPaths = referencedRemoteFiles,
+                        scanAllLocalMissing = true,
+                        onProgress = reportProgress,
                     )
-                    if (!finalPull.resetRequired) {
-                        pulledConvCount += finalPull.pulledConversations
-                        referencedRemoteFiles.addAll(finalPull.referencedFiles)
-                        cursor = finalPull.newCursor
+
+                    conflictsCount += (syncV2Dao.getUnresolvedConflicts().size - conflictsBeforeFiles).coerceAtLeast(0)
+                    val pendingFiles = syncV2Dao.getAllFileQueue().size
+                    syncV2Dao.upsertMeta(SyncMetaEntity(META_COVERAGE, SyncSettingsContract.COVERAGE_VERSION))
+                    // Step 4: 更新最后同步时间并清理旧版遗留墓碑表
+                    val nowTime = System.currentTimeMillis()
+                    settingsStore.update { current ->
+                        current.copy(
+                            syncServerConfig = current.syncServerConfig.copy(lastSyncTime = nowTime)
+                        )
                     }
-                }
+                    conversationBridge.purgeLegacyTombstones(nowTime - 30L * 24 * 3600 * 1000)
 
-                // Step 3: 附件校验、上传与原子下载（含断点重试队列 sync_file_queue）
-                val conflictsBeforeFiles = syncV2Dao.getUnresolvedConflicts().size
-                val syncedFilesCount = syncAttachments(
-                    baseUrl = baseUrl,
-                    token = token,
-                    syncFilesEnabled = config.syncFiles,
-                    newlyReferencedRelPaths = referencedRemoteFiles,
-                    scanAllLocalMissing = true,
-                    onProgress = reportProgress,
-                )
+                    val warnings = coverage?.issues.orEmpty().map { it.message }
+                    _syncWarnings.value = warnings
 
-                conflictsCount += (syncV2Dao.getUnresolvedConflicts().size - conflictsBeforeFiles).coerceAtLeast(0)
-                val pendingFiles = syncV2Dao.getAllFileQueue().size
-                syncV2Dao.upsertMeta(SyncMetaEntity(META_COVERAGE, SyncSettingsContract.COVERAGE_VERSION))
-                // Step 4: 更新最后同步时间并清理旧版遗留墓碑表
-                val nowTime = System.currentTimeMillis()
-                settingsStore.update { current ->
-                    current.copy(
-                        syncServerConfig = current.syncServerConfig.copy(lastSyncTime = nowTime)
+                    reportProgress(
+                        if (warnings.isNotEmpty()) {
+                            "其他数据同步完成，${warnings.size} 个工作区需要重新填写 SSH 凭据"
+                        } else if (conflictsCount > 0) {
+                            "同步完成（检测到 $conflictsCount 项并发冲突，已完整保护至冲突中心）"
+                        } else if (pendingFiles > 0) {
+                            "数据同步完成，仍有 $pendingFiles 个附件等待传输"
+                        } else {
+                            "Sync V2 增量同步完成！"
+                        }
                     )
+
+                    SyncSummary(
+                        pulledConversations = pulledConvCount,
+                        pushedConversations = pushedConvCount,
+                        syncedAssistants = syncedAssistantsCount,
+                        syncedProviders = syncedProvidersCount,
+                        syncedFiles = syncedFilesCount,
+                        conflictsDetected = conflictsCount,
+                        currentRevision = cursor,
+                        serverTimestamp = nowTime,
+                        warnings = warnings,
+                    )
+                } finally {
+                    _isSyncing.value = false
                 }
-                conversationBridge.purgeLegacyTombstones(nowTime - 30L * 24 * 3600 * 1000)
-
-                val warnings = coverage?.issues.orEmpty().map { it.message }
-
-                reportProgress(
-                    if (warnings.isNotEmpty()) {
-                        "其他数据同步完成，${warnings.size} 个工作区需要重新填写 SSH 凭据"
-                    } else if (conflictsCount > 0) {
-                        "同步完成（检测到 $conflictsCount 项并发冲突，已完整保护至冲突中心）"
-                    } else if (pendingFiles > 0) {
-                        "数据同步完成，仍有 $pendingFiles 个附件等待传输"
-                    } else {
-                        "Sync V2 增量同步完成！"
-                    }
-                )
-
-                SyncSummary(
-                    pulledConversations = pulledConvCount,
-                    pushedConversations = pushedConvCount,
-                    syncedAssistants = syncedAssistantsCount,
-                    syncedProviders = syncedProvidersCount,
-                    syncedFiles = syncedFilesCount,
-                    conflictsDetected = conflictsCount,
-                    currentRevision = cursor,
-                    serverTimestamp = nowTime,
-                    warnings = warnings,
-                )
             }
         }.recoverCatching { failure ->
             if (failure is CancellationException || failure !is Exception) throw failure
             val detail = failure.message?.takeIf { it.isNotBlank() } ?: failure.javaClass.simpleName
-            throw IllegalStateException("同步失败：$stage（$detail）", failure)
+            val wrapped = IllegalStateException("同步失败：$stage（$detail）", failure)
+            _syncErrorMessage.value = wrapped.message
+            throw wrapped
         }
     }
 

@@ -9,14 +9,18 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
@@ -42,8 +46,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.CancellationException
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.AiMagic
 import me.rerere.hugeicons.stroke.Alert01
@@ -62,6 +68,7 @@ import me.rerere.hugeicons.stroke.McpServer
 import me.rerere.hugeicons.stroke.Megaphone01
 import me.rerere.hugeicons.stroke.Moon02
 import me.rerere.hugeicons.stroke.Package
+import me.rerere.hugeicons.stroke.Refresh01
 import me.rerere.hugeicons.stroke.ServerStack01
 import me.rerere.hugeicons.stroke.Settings03
 import me.rerere.hugeicons.stroke.Share04
@@ -71,6 +78,7 @@ import me.rerere.hugeicons.stroke.Tiktok
 import me.rerere.hugeicons.stroke.WavingHand01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
+import me.rerere.rikkahub.data.datastore.SyncServerConfig
 import me.rerere.rikkahub.data.datastore.isNotConfigured
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.ui.components.nav.BackButton
@@ -81,6 +89,7 @@ import me.rerere.rikkahub.ui.components.ui.ConnectedChoiceLabel
 import me.rerere.rikkahub.ui.components.ui.permission.LocalNetworkPermissionCard
 import me.rerere.rikkahub.ui.components.ui.permission.rememberLocalNetworkPermissionState
 import me.rerere.rikkahub.ui.context.LocalNavController
+import me.rerere.rikkahub.ui.context.LocalToaster
 import me.rerere.rikkahub.ui.hooks.rememberColorMode
 import me.rerere.rikkahub.ui.theme.ColorMode
 import me.rerere.rikkahub.ui.theme.CustomColors
@@ -90,8 +99,12 @@ import me.rerere.rikkahub.utils.plus
 import me.rerere.rikkahub.utils.writeClipboardText
 import me.rerere.ui.icons.DiscordIcon
 import me.rerere.ui.icons.TencentQQIcon
+import me.rerere.ui.toast.ToastType
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 @Composable
 fun SettingPage(vm: SettingVM = koinViewModel()) {
@@ -149,6 +162,14 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
             contentPadding = innerPadding + PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            item("quickSync") {
+                QuickSyncCard(
+                    vm = vm,
+                    syncConfig = settings.syncServerConfig,
+                    onOpenSyncSettings = { navController.navigate(Screen.Backup) },
+                )
+            }
+
             if (settings.isNotConfigured()) {
                 item {
                     ProviderConfigWarningCard(
@@ -401,6 +422,173 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                 }
             }
         }
+    }
+}
+
+private val QUICK_SYNC_TIME_FORMATTER: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("MM-dd HH:mm")
+
+private fun formatQuickSyncTime(epochMillis: Long): String {
+    if (epochMillis <= 0L) return ""
+    return Instant.ofEpochMilli(epochMillis)
+        .atZone(ZoneId.systemDefault())
+        .format(QUICK_SYNC_TIME_FORMATTER)
+}
+
+@Composable
+private fun QuickSyncCard(
+    vm: SettingVM,
+    syncConfig: SyncServerConfig,
+    onOpenSyncSettings: () -> Unit,
+) {
+    val isSyncing by vm.isSyncing.collectAsStateWithLifecycle()
+    val syncStatusMessage by vm.syncStatusMessage.collectAsStateWithLifecycle()
+    val syncErrorMessage by vm.syncErrorMessage.collectAsStateWithLifecycle()
+    val unresolvedConflictCount by vm.unresolvedSyncConflictCount.collectAsStateWithLifecycle()
+    val pendingFileCount by vm.pendingSyncFileCount.collectAsStateWithLifecycle()
+    val outboxCount by vm.outboxSyncCount.collectAsStateWithLifecycle()
+    val currentRevision by vm.currentSyncRevision.collectAsStateWithLifecycle()
+    val toaster = LocalToaster.current
+
+    val isConfigured = syncConfig.serverUrl.isNotBlank() && syncConfig.authToken.isNotBlank()
+    val hasIssue = unresolvedConflictCount > 0 || syncErrorMessage != null
+    val iconContainerColor = if (hasIssue) {
+        MaterialTheme.colorScheme.errorContainer
+    } else {
+        MaterialTheme.colorScheme.primaryContainer
+    }
+    val iconContentColor = if (hasIssue) {
+        MaterialTheme.colorScheme.onErrorContainer
+    } else {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    }
+
+    val lastSyncShort = remember(syncConfig.lastSyncTime) {
+        formatQuickSyncTime(syncConfig.lastSyncTime)
+    }
+
+    CardGroup {
+        item(
+            onClick = onOpenSyncSettings,
+            leadingContent = {
+                CardGroupIcon(
+                    icon = if (unresolvedConflictCount > 0) HugeIcons.Alert01 else HugeIcons.Refresh01,
+                    containerColor = iconContainerColor,
+                    contentColor = iconContentColor,
+                )
+            },
+            headlineContent = {
+                Text(
+                    text = if (unresolvedConflictCount > 0) {
+                        "云端增量同步 · $unresolvedConflictCount 项冲突"
+                    } else {
+                        "云端增量同步"
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            },
+            supportingContent = {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    when {
+                        isSyncing -> {
+                            Text(
+                                text = syncStatusMessage.ifEmpty {
+                                    stringResource(R.string.backup_page_sync_server_syncing)
+                                },
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        !isConfigured -> {
+                            Text(
+                                text = "尚未配置同步令牌，点击前往设置",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        else -> {
+                            val summaryText = remember(
+                                lastSyncShort,
+                                currentRevision,
+                                outboxCount,
+                                pendingFileCount,
+                            ) {
+                                buildString {
+                                    if (lastSyncShort.isNotEmpty()) {
+                                        append("上次 $lastSyncShort")
+                                    } else {
+                                        append("从未同步")
+                                    }
+                                    append(" · Rev #$currentRevision")
+                                    if (outboxCount > 0) {
+                                        append(" · 待推 $outboxCount")
+                                    }
+                                    if (pendingFileCount > 0) {
+                                        append(" · 附件 $pendingFileCount")
+                                    }
+                                }
+                            }
+                            Text(
+                                text = summaryText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            syncErrorMessage?.let { err ->
+                                Text(
+                                    text = err,
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            trailingContent = {
+                FilledTonalButton(
+                    onClick = {
+                        if (!isConfigured) {
+                            onOpenSyncSettings()
+                        } else {
+                            vm.triggerIncrementalSync { result ->
+                                result.onSuccess { summary ->
+                                    toaster.show(summary.toToastMessage(), type = ToastType.Success)
+                                }.onFailure { err ->
+                                    if (err !is CancellationException) {
+                                        toaster.show(err.message ?: "同步失败", type = ToastType.Error)
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    enabled = !isSyncing,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    if (isSyncing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("同步中")
+                    } else if (!isConfigured) {
+                        Text("去配置")
+                    } else {
+                        Icon(
+                            imageVector = HugeIcons.Refresh01,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("同步")
+                    }
+                }
+            },
+        )
     }
 }
 

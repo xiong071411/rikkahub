@@ -44,10 +44,10 @@ class BackupVM(
         initialValue = Settings.dummy()
     )
 
-    val isSyncing = MutableStateFlow(false)
-    val syncStatusMessage = MutableStateFlow("")
-    val syncErrorMessage = MutableStateFlow<String?>(null)
-    val syncWarnings = MutableStateFlow<List<String>>(emptyList())
+    val isSyncing = incrementalSyncEngine.isSyncing
+    val syncStatusMessage = incrementalSyncEngine.syncStatusMessage
+    val syncErrorMessage = incrementalSyncEngine.syncErrorMessage
+    val syncWarnings = incrementalSyncEngine.syncWarnings
 
     // 按需订阅（WhileSubscribed）：离开同步设置页 5 秒后自动解绑 Room 查询，降低手表与手机待机功耗
     val unresolvedSyncConflicts = incrementalSyncEngine.observeUnresolvedConflicts()
@@ -102,22 +102,17 @@ class BackupVM(
         return incrementalSyncEngine.testConnection(settings.value.syncServerConfig).getOrThrow()
     }
 
+    fun triggerIncrementalSync(
+        onComplete: ((Result<me.rerere.rikkahub.data.sync.engine.SyncSummary>) -> Unit)? = null,
+    ) {
+        incrementalSyncEngine.startBackgroundSync(
+            config = settings.value.syncServerConfig,
+            onComplete = onComplete,
+        )
+    }
+
     suspend fun startIncrementalSync(): me.rerere.rikkahub.data.sync.engine.SyncSummary {
-        isSyncing.value = true
-        syncErrorMessage.value = null
-        syncWarnings.value = emptyList()
-        syncStatusMessage.value = "准备同步..."
-        return try {
-            incrementalSyncEngine.sync(settings.value.syncServerConfig) { msg ->
-                syncStatusMessage.value = msg
-            }.getOrThrow().also { syncWarnings.value = it.warnings }
-        } catch (error: Exception) {
-            if (error is kotlinx.coroutines.CancellationException) throw error
-            syncErrorMessage.value = error.message ?: "同步失败（${error.javaClass.simpleName}）"
-            throw error
-        } finally {
-            isSyncing.value = false
-        }
+        return incrementalSyncEngine.awaitBackgroundSync(settings.value.syncServerConfig)
     }
 
     suspend fun forkConflictConversation(conflict: SyncConflictEntity): Conversation {

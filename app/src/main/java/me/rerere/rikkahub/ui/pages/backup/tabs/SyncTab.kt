@@ -300,25 +300,17 @@ fun SyncTab(
                     ) {
                         Button(
                             onClick = {
-                                scope.launch {
-                                    try {
-                                        val summary = vm.startIncrementalSync()
-                                        val conflictSuffix = if (summary.conflictsDetected > 0) {
-                                            "，保护冲突 ${summary.conflictsDetected} 项"
-                                        } else {
-                                            ""
-                                        }
+                                vm.triggerIncrementalSync { result ->
+                                    result.onSuccess { summary ->
                                         toaster.show(
-                                            if (summary.warnings.isNotEmpty()) {
-                                                "其他数据已同步，${summary.warnings.size} 个工作区需要处理，请查看页面提示"
-                                            } else {
-                                                "同步完成 (Rev #${summary.currentRevision})：拉取 ${summary.pulledConversations} 条、推送 ${summary.pushedConversations} 条$conflictSuffix"
-                                            },
+                                            summary.toToastMessage(),
                                             type = ToastType.Success
                                         )
-                                    } catch (e: Exception) {
-                                        e.printStackTrace()
-                                        toaster.show(e.message ?: "同步失败", type = ToastType.Error)
+                                    }.onFailure { e ->
+                                        if (e !is kotlinx.coroutines.CancellationException) {
+                                            e.printStackTrace()
+                                            toaster.show(e.message ?: "同步失败", type = ToastType.Error)
+                                        }
                                     }
                                 }
                             },
