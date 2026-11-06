@@ -156,10 +156,16 @@ jobs:
           find /tmp/simple-build-armeabi-v7a -name "libsimple.so" -exec cp {} app/src/main/jniLibs/armeabi-v7a/ \;
           ls -la app/src/main/jniLibs/armeabi-v7a/libsimple.so
 
-      - name: Test app sync and data protection
+      - name: Test app sync, image rotation and data protection
         run: |
           chmod +x gradlew
-          ./gradlew :app:testCoexistNormalDebugUnitTest --tests '*Sync*' --tests '*MemoryRepositoryTest' --tests '*ChatInputStateTest' --tests '*MarkdownUtilsTest' \
+          ./gradlew :app:testCoexistNormalDebugUnitTest --tests '*Sync*' --tests '*MemoryRepositoryTest' --tests '*ChatInputStateTest' --tests '*MarkdownUtilsTest' --tests '*BatchImageRotation*' \
+            --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
+            '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
+
+      - name: Test image crop regressions
+        run: |
+          ./gradlew :ui:testDebugUnitTest --tests '*ImageCropStateTest' \
             --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
 

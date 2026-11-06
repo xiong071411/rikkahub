@@ -30,20 +30,7 @@ internal class CropImage(val bitmap: Bitmap, val preview: ImageBitmap)
 internal suspend fun loadCropImage(context: Context, uri: Uri, maxSize: Int): CropImage? =
     withContext(Dispatchers.IO) {
         runCatching {
-            val decoded = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                runCatching { decodeWithImageDecoder(context, uri, maxSize) }.getOrElse {
-                    Log.w(TAG, "ImageDecoder failed for $uri, falling back to BitmapFactory", it)
-                    decodeWithBitmapFactory(context, uri, maxSize)
-                }
-            } else {
-                decodeWithBitmapFactory(context, uri, maxSize)
-            }
-            // HDR 的 HEIF 会解成 10 位或者半精度的格式，统一转成 8 位，后面才能按 JPEG 存
-            val bitmap = if (decoded.config != Bitmap.Config.ARGB_8888) {
-                decoded.copy(Bitmap.Config.ARGB_8888, false).also { decoded.recycle() }
-            } else {
-                decoded
-            }
+            val bitmap = decodeUprightBitmap(context, uri, maxSize)
             val longest = max(bitmap.width, bitmap.height)
             val preview = if (longest > PREVIEW_SIZE) {
                 val ratio = PREVIEW_SIZE.toFloat() / longest
@@ -59,6 +46,29 @@ internal suspend fun loadCropImage(context: Context, uri: Uri, maxSize: Int): Cr
             Log.e(TAG, "Failed to load $uri", it)
         }.getOrNull()
     }
+
+// 裁剪和批量旋转共用解码流程，预览与导出都先按 EXIF 摆正，避免重复旋转方向标记。
+internal fun decodeUprightBitmap(context: Context, uri: Uri, maxSize: Int): Bitmap {
+    require(maxSize > 0)
+    val decoded = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        runCatching { decodeWithImageDecoder(context, uri, maxSize) }.getOrElse {
+            Log.w(TAG, "ImageDecoder failed for $uri, falling back to BitmapFactory", it)
+            decodeWithBitmapFactory(context, uri, maxSize)
+        }
+    } else {
+        decodeWithBitmapFactory(context, uri, maxSize)
+    }
+    // HDR 的 HEIF 会解成 10 位或者半精度的格式，统一转成 8 位，后面才能按 JPEG 存。
+    return if (decoded.config != Bitmap.Config.ARGB_8888) {
+        try {
+            checkNotNull(decoded.copy(Bitmap.Config.ARGB_8888, false))
+        } finally {
+            decoded.recycle()
+        }
+    } else {
+        decoded
+    }
+}
 
 // ImageDecoder 自己会按 EXIF 摆正，也能解 HEIF
 @RequiresApi(Build.VERSION_CODES.P)
@@ -88,5 +98,12 @@ private fun decodeWithBitmapFactory(context: Context, uri: Uri, maxSize: Int): B
     val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
     val decoded = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
         ?: error("Failed to decode $uri")
-    return decoded.upright(context, uri)
+    return try {
+        decoded.upright(context, uri).also { upright ->
+            if (upright !== decoded) decoded.recycle()
+        }
+    } catch (error: Throwable) {
+        decoded.recycle()
+        throw error
+    }
 }

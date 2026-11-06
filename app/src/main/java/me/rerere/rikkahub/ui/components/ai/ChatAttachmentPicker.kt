@@ -105,15 +105,19 @@ internal fun rememberChatAttachmentPickerActions(
             onAttachmentAdded()
         },
     )
+    val launchBatchImageRotation = useBatchImageRotationLauncher(inputState, onAttachmentAdded)
     val imagePickerLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { selectedUris ->
             if (selectedUris.isNotEmpty()) {
                 Log.d("ImagePickButton", "Selected URIs: $selectedUris")
-                if (!setting.displaySetting.skipCropImage && selectedUris.size == 1) {
-                    launchImageCrop(selectedUris.first())
-                } else {
-                    inputState.addImages(filesManager.createChatFilesByContents(selectedUris))
-                    onAttachmentAdded()
+                when {
+                    setting.displaySetting.skipCropImage -> {
+                        inputState.addImages(filesManager.createChatFilesByContents(selectedUris))
+                        onAttachmentAdded()
+                    }
+
+                    selectedUris.size == 1 -> launchImageCrop(selectedUris.first())
+                    else -> launchBatchImageRotation(selectedUris)
                 }
             } else {
                 Log.d("ImagePickButton", "No images selected")
