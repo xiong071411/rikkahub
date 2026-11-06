@@ -4,7 +4,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertSame
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -50,7 +49,9 @@ class BatchImageRotationProcessorTest {
             )
             fail("Expected image failure")
         } catch (error: IllegalStateException) {
-            assertSame(failure, error)
+            // 协程恢复堆栈时可能复制异常，验证错误内容和清理结果，不依赖对象身份。
+            assertEquals(failure.javaClass, error.javaClass)
+            assertEquals(failure.message, error.message)
         }
         assertEquals(listOf(0), discarded)
         assertFalse(committed)
