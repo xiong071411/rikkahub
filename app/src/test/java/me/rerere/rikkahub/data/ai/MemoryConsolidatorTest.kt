@@ -7,8 +7,11 @@ import kotlinx.datetime.toInstant
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.prompts.buildMemoryConsolidationPrompt
+import me.rerere.rikkahub.data.ai.prompts.buildMemoryPrompt
 import me.rerere.rikkahub.data.ai.tools.MemoryToolNames
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -178,5 +181,56 @@ class MemoryConsolidatorTest {
             """.trimIndent(),
             transcript,
         )
+    }
+
+    @Test
+    fun `learning mode keeps image-only turns and does not truncate long assistant explanations`() {
+        val imageTurnUser = UIMessage(
+            role = MessageRole.USER,
+            parts = listOf(
+                UIMessagePart.Image(url = "file:///problem1.jpg"),
+                UIMessagePart.Image(url = "file:///problem2.jpg"),
+            ),
+            createdAt = minute(1),
+        )
+        val longExplanation = "Detailed diagnosis: ".repeat(300) + "Final weak point summary: sign error in work-energy theorem"
+        val messages = listOf(
+            imageTurnUser,
+            assistant(2, UIMessagePart.Text(longExplanation)),
+        )
+
+        assertTrue(pendingMemoryTurns(messages, updatedAt = timeOf(3), consolidatedAt = 0, timeZone = zone, learningMode = false).turns.isEmpty())
+
+        val learningPending = pendingMemoryTurns(
+            messages = messages,
+            updatedAt = timeOf(3),
+            consolidatedAt = 0,
+            timeZone = zone,
+            learningMode = true,
+        )
+        assertEquals(1, learningPending.turns.size)
+
+        val transcript = learningPending.turns.single().messages.toMemoryTranscript(
+            userLength = null,
+            assistantLength = null,
+            learningMode = true,
+        )
+        assertTrue(transcript.contains("[user attached 2 image(s);"))
+        assertTrue(transcript.contains("Final weak point summary: sign error in work-energy theorem"))
+        assertFalse(transcript.endsWith("..."))
+    }
+
+    @Test
+    fun `learning mode prompts include observed tag and subject learning paths`() {
+        val defaultConsolidation = buildMemoryConsolidationPrompt(fullReview = false, learningMode = false)
+        val learningConsolidation = buildMemoryConsolidationPrompt(fullReview = false, learningMode = true)
+        assertFalse(defaultConsolidation.contains("/areas/learning/"))
+        assertTrue(learningConsolidation.contains("/areas/learning/"))
+        assertTrue(learningConsolidation.contains("[observed]"))
+
+        val defaultSystem = buildMemoryPrompt(emptyList(), learningMode = false)
+        val learningSystem = buildMemoryPrompt(emptyList(), learningMode = true)
+        assertFalse(defaultSystem.contains("/areas/learning/"))
+        assertTrue(learningSystem.contains("/areas/learning/"))
     }
 }

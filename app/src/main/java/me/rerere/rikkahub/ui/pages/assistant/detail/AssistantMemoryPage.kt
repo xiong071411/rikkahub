@@ -254,6 +254,19 @@ private fun MemorySettingsTab(
                 headlineContent = { Text(stringResource(R.string.assistant_page_memory_auto_dream)) },
             )
             switchItem(
+                checked = assistant.learningMemoryMode,
+                onCheckedChange = {
+                    onUpdateAssistant(
+                        assistant.copy(
+                            learningMemoryMode = it
+                        )
+                    )
+                },
+                enabled = assistant.enableMemory,
+                supportingContent = { Text(stringResource(R.string.assistant_page_memory_learning_mode_desc)) },
+                headlineContent = { Text(stringResource(R.string.assistant_page_memory_learning_mode)) },
+            )
+            switchItem(
                 checked = assistant.enableRecentChatsReference,
                 onCheckedChange = {
                     onUpdateAssistant(

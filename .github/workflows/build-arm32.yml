@@ -159,7 +159,7 @@ jobs:
       - name: Test app sync, image rotation and data protection
         run: |
           chmod +x gradlew
-          ./gradlew :app:testCoexistNormalDebugUnitTest --tests '*Sync*' --tests '*MemoryRepositoryTest' --tests '*ChatInputStateTest' --tests '*MarkdownUtilsTest' --tests '*BatchImageRotation*' \
+          ./gradlew :app:testCoexistNormalDebugUnitTest --tests '*Sync*' --tests '*MemoryRepositoryTest' --tests '*MemoryConsolidat*' --tests '*ChatInputStateTest' --tests '*MarkdownUtilsTest' --tests '*BatchImageRotation*' \
             --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
 

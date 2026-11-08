@@ -205,7 +205,7 @@ data class BackupReminderConfig(
 
 @Serializable
 data class SyncServerConfig(
-    val serverUrl: String = "http://45.207.200.189:8765",
+    val serverUrl: String = "https://sync.qingningplayer.top",
     // 安全加固：默认不内置任何硬编码令牌，必须由用户填入服务端生成的独立 RIKKA_SYNC_TOKEN
     val authToken: String = "",
     val syncFiles: Boolean = true,

@@ -125,6 +125,7 @@ private const val READ_MESSAGE_LENGTH = 12_000
 fun createMemoryConversationTools(
     conversationRepo: ConversationRepository,
     assistantIds: Set<Uuid>,
+    learningMode: Boolean = false,
 ): List<Tool> = listOf(
     conversationSearchTool { query -> conversationRepo.searchMessagesOfAssistants(query, assistantIds) },
     Tool(
@@ -175,7 +176,8 @@ fun createMemoryConversationTools(
                             put("position", offset + index)
                             put("role", message.role.name)
                             put("date", message.createdAt.date.toString())
-                            put("text", message.toText().take(READ_MESSAGE_LENGTH))
+                            val text = message.toText()
+                            put("text", if (learningMode) text else text.take(READ_MESSAGE_LENGTH))
                         })
                     }
                 })

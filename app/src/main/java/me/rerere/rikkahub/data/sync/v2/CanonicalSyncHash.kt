@@ -192,6 +192,9 @@ object CanonicalSyncHash {
 
     private fun normalizeAssistantJson(obj: JsonObject, filesDir: File? = null): JsonObject {
         val out = obj.toMutableMap()
+        if ((out["learningMemoryMode"] as? JsonPrimitive)?.booleanOrNull == false) {
+            out.remove("learningMemoryMode")
+        }
         val avatarObj = out["avatar"] as? JsonObject
         if (avatarObj != null && "url" in avatarObj) {
             val urlPrim = avatarObj["url"] as? JsonPrimitive

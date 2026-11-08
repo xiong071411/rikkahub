@@ -66,6 +66,9 @@ def verify(root: Path, build_tools: Path, version_code: int, version_name: str, 
                 for marker in (b"image_rotation_", "批量旋转".encode("utf-8")):
                     if not any(marker in data for data in dex):
                         raise ValueError(f"缺少批量旋转图片代码：{source}: {marker.decode()}")
+                for marker in (b"learningMemoryMode", b"/areas/learning/"):
+                    if not any(marker in data for data in dex):
+                        raise ValueError(f"缺少学习模式记忆代码：{source}: {marker.decode()}")
                 dex_hashes[(flavor, abi)] = [hashlib.sha256(data).hexdigest() for data in dex]
             record = {
                 "source": source.as_posix(), "filename": filename, "flavor": flavor, "abi": abi,

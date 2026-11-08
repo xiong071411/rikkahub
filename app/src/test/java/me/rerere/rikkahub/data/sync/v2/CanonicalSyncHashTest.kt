@@ -205,11 +205,12 @@ class CanonicalSyncHashTest {
     fun `legacy hardcoded sync token is stripped on normalization while real custom token persists`() {
         // 默认配置绝不包含任何内置密钥
         assertEquals("", SyncServerConfig().authToken)
+        assertEquals("https://sync.qingningplayer.top", SyncServerConfig().serverUrl)
 
         // 历史盘上如果残留旧版硬编码默认口令，读取/规整时自动清空
         val legacySettings = Settings(
             syncServerConfig = SyncServerConfig(
-                serverUrl = "http://45.207.200.189:8765",
+                serverUrl = "https://sync.qingningplayer.top",
                 authToken = "rikkahub-sync-secret-2026",
             )
         ).normalized()
@@ -219,7 +220,7 @@ class CanonicalSyncHashTest {
         val realToken = "rk_sync_test_token_9f8e7d6c5b4a3210"
         val configured = Settings(
             syncServerConfig = SyncServerConfig(
-                serverUrl = "http://45.207.200.189:8765",
+                serverUrl = "https://sync.qingningplayer.top",
                 authToken = realToken,
                 deviceName = "RMX3800",
                 syncFiles = true,
@@ -230,5 +231,19 @@ class CanonicalSyncHashTest {
         val reloaded = prefs.toSettings()
         assertEquals(realToken, reloaded.syncServerConfig.authToken)
         assertEquals("RMX3800", reloaded.syncServerConfig.deviceName)
+    }
+
+    @Test
+    fun `assistant learningMemoryMode false matches legacy hash while true changes hash`() {
+        val legacyAssistantJson = """{"id":"3d47790c-c415-4b90-9388-751128adb0a0","name":"全科讲题辅导助手","enableMemory":true,"autoConsolidateMemory":true}"""
+        val defaultLearningFalseJson = """{"id":"3d47790c-c415-4b90-9388-751128adb0a0","name":"全科讲题辅导助手","enableMemory":true,"autoConsolidateMemory":true,"learningMemoryMode":false}"""
+        val enabledLearningTrueJson = """{"id":"3d47790c-c415-4b90-9388-751128adb0a0","name":"全科讲题辅导助手","enableMemory":true,"autoConsolidateMemory":true,"learningMemoryMode":true}"""
+
+        val legacyHash = CanonicalSyncHash.computeSemanticHash("assistant", legacyAssistantJson)
+        val falseHash = CanonicalSyncHash.computeSemanticHash("assistant", defaultLearningFalseJson)
+        val trueHash = CanonicalSyncHash.computeSemanticHash("assistant", enabledLearningTrueJson)
+
+        assertEquals(legacyHash, falseHash)
+        assertNotEquals(legacyHash, trueHash)
     }
 }

@@ -19,6 +19,7 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.ui.UIMessage
+import me.rerere.ai.ui.UIMessagePart
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.data.ai.prompts.MemoryConsolidationConversation
 import me.rerere.rikkahub.data.ai.prompts.buildMemoryConsolidationInput
@@ -53,6 +54,7 @@ private const val MAX_CONVERSATIONS_PER_RUN = 8
 private const val MAX_SCANNED_CONVERSATIONS = 50
 private const val MAX_TURNS_PER_CONVERSATION = 12
 private const val MAX_TRANSCRIPT_LENGTH = 60_000
+private const val MAX_LEARNING_TRANSCRIPT_LENGTH = 240_000
 private const val RECENT_CONTEXT_MESSAGES = 6
 private const val RECENT_CONTEXT_MESSAGE_LENGTH = 500
 private const val USER_MESSAGE_LENGTH = 8000
@@ -81,7 +83,7 @@ class MemoryConsolidator(
         withContext(Dispatchers.IO) {
             val assistant = settingsStore.awaitLoaded().getAssistantById(conversation.assistantId)
                 ?.takeIf { it.enableMemory } ?: return@withContext null
-            val pending = loadPendingTurns(conversation)
+            val pending = loadPendingTurns(conversation, learningMode = assistant.learningMemoryMode)
             if (pending.turns.isEmpty()) {
                 null
             } else {
@@ -156,16 +158,19 @@ class MemoryConsolidator(
         val assistants = settings.assistants.filter { it.enableMemory && it.memoryId == memoryId }
         if (assistants.isEmpty()) return null
         val assistantIds = assistants.map { it.id }.toSet()
+        val assistantsById = assistants.associateBy { it.id }
+        val learningMode = assistants.any { it.learningMemoryMode }
 
         val batches = conversationIds
             .mapNotNull { conversationRepo.getConversationById(it) }
             .filter { it.assistantId in assistantIds }
             .sortedByDescending { it.updateAt }
             .mapNotNull { conversation ->
-                val pending = loadPendingTurns(conversation)
-                if (pending.turns.isEmpty()) null else Batch(conversation, pending)
+                val convLearningMode = assistantsById[conversation.assistantId]?.learningMemoryMode == true
+                val pending = loadPendingTurns(conversation, learningMode = convLearningMode)
+                if (pending.turns.isEmpty()) null else Batch(conversation, pending, learningMode = convLearningMode)
             }
-            .withinTranscriptBudget()
+            .withinTranscriptBudget(if (learningMode) MAX_LEARNING_TRANSCRIPT_LENGTH else MAX_TRANSCRIPT_LENGTH)
         val files = memoryRepository.getFiles(memoryId)
         // 没有新的轮次时，只有手动清理且记忆库里有东西才值得调用模型
         if (batches.isEmpty() && (!fullReview || files.isEmpty())) return null
@@ -179,8 +184,8 @@ class MemoryConsolidator(
         // 自动整理只增改；删文件只在用户手动要求清理整个记忆库时才允许
         val tools = buildMemoryTools(memoryRepository, memoryId)
             .filter { fullReview || it.name != MemoryToolNames.DELETE } +
-            createMemoryConversationTools(conversationRepo, assistantIds)
-        val systemPrompt = buildMemoryConsolidationPrompt(fullReview)
+            createMemoryConversationTools(conversationRepo, assistantIds, learningMode = learningMode)
+        val systemPrompt = buildMemoryConsolidationPrompt(fullReview, learningMode = learningMode)
         // 整次整理的每一步用同一个会话 ID，服务端才能命中前面几步的缓存
         val params = backgroundTextGenerationParams(model, Uuid.random(), reasoningLevel)
         val hooks = object : AgentHooks {
@@ -239,15 +244,19 @@ class MemoryConsolidator(
         )
     }
 
-    private suspend fun loadPendingTurns(conversation: Conversation): PendingMemoryTurns {
+    private suspend fun loadPendingTurns(
+        conversation: Conversation,
+        learningMode: Boolean = false,
+    ): PendingMemoryTurns {
         val messages = conversation.dialogueMessages()
         val consolidatedAt = consolidationDao.getConsolidatedAt(conversation.id.toString())
             // 第一次见到这个对话：定下从哪里开始整理并记下来，这之后的轮次一轮都不会被跳过
-            ?: initialMemoryProgress(messages).also { advance(conversation.id, it) }
+            ?: initialMemoryProgress(messages, learningMode = learningMode).also { advance(conversation.id, it) }
         val pending = pendingMemoryTurns(
             messages = messages,
             updatedAt = conversation.updateAt.toEpochMilli(),
             consolidatedAt = consolidatedAt,
+            learningMode = learningMode,
         )
         // 没有新的轮次（比如只是重新生成了回复）也推进进度，免得每次扫描都把它读出来
         if (pending.turns.isEmpty()) pending.consolidatedThrough?.let { advance(conversation.id, it) }
@@ -263,7 +272,11 @@ class MemoryConsolidator(
     }.isSuccess
 }
 
-private class Batch(val conversation: Conversation, val pending: PendingMemoryTurns) {
+private class Batch(
+    val conversation: Conversation,
+    val pending: PendingMemoryTurns,
+    val learningMode: Boolean = false,
+) {
     val input: MemoryConsolidationConversation by lazy {
         val messages = conversation.dialogueMessages().withIndex().filterNot { it.value.isContextCheckpoint }
         val firstPosition = pending.turns.first().position
@@ -273,20 +286,28 @@ private class Batch(val conversation: Conversation, val pending: PendingMemoryTu
             recentContext = messages
                 .filter { it.index < firstPosition }
                 .takeLast(RECENT_CONTEXT_MESSAGES)
-                .toMemoryTranscript(RECENT_CONTEXT_MESSAGE_LENGTH, RECENT_CONTEXT_MESSAGE_LENGTH),
+                .toMemoryTranscript(
+                    userLength = RECENT_CONTEXT_MESSAGE_LENGTH,
+                    assistantLength = if (learningMode) null else RECENT_CONTEXT_MESSAGE_LENGTH,
+                    learningMode = learningMode,
+                ),
             newTurns = pending.turns
                 .flatMap { it.messages }
-                .toMemoryTranscript(USER_MESSAGE_LENGTH, ASSISTANT_MESSAGE_LENGTH),
+                .toMemoryTranscript(
+                    userLength = if (learningMode) null else USER_MESSAGE_LENGTH,
+                    assistantLength = if (learningMode) null else ASSISTANT_MESSAGE_LENGTH,
+                    learningMode = learningMode,
+                ),
         )
     }
 }
 
 // 超出的对话留在待整理里，这次整理完后会接着处理；至少带上一个，否则永远轮不到
-private fun List<Batch>.withinTranscriptBudget(): List<Batch> {
+private fun List<Batch>.withinTranscriptBudget(maxLength: Int = MAX_TRANSCRIPT_LENGTH): List<Batch> {
     var length = 0
     return take(MAX_CONVERSATIONS_PER_RUN).filterIndexed { index, batch ->
         length += batch.input.newTurns.length
-        index == 0 || length <= MAX_TRANSCRIPT_LENGTH
+        index == 0 || length <= maxLength
     }
 }
 
@@ -353,8 +374,10 @@ private fun memoryTurnsOf(messages: List<UIMessage>): List<MemoryTurn> {
     }
 }
 
-// 只发了图片之类没有文字的轮次没有可提取的内容
-private val MemoryTurn.hasUserText: Boolean get() = userMessage.toText().isNotBlank()
+// 普通模式下只发了图片没有文字的轮次没有可提取的内容；学习模式下纯图片/文档提问也会由助手批改讲解，需要保留
+private fun MemoryTurn.hasConsolidatableInput(learningMode: Boolean): Boolean =
+    userMessage.toText().isNotBlank() ||
+        (learningMode && userMessage.parts.any { it is UIMessagePart.Image || it is UIMessagePart.Document })
 
 /**
  * 第一次跟踪一个对话时的整理进度：只回看最近 [MAX_TURNS_PER_CONVERSATION] 轮。
@@ -365,8 +388,12 @@ private val MemoryTurn.hasUserText: Boolean get() = userMessage.toText().isNotBl
 internal fun initialMemoryProgress(
     messages: List<UIMessage>,
     timeZone: TimeZone = TimeZone.currentSystemDefault(),
+    learningMode: Boolean = false,
 ): Long {
-    val first = memoryTurnsOf(messages).filter { it.hasUserText }.takeLast(MAX_TURNS_PER_CONVERSATION).firstOrNull()
+    val first = memoryTurnsOf(messages)
+        .filter { it.hasConsolidatableInput(learningMode) }
+        .takeLast(MAX_TURNS_PER_CONVERSATION)
+        .firstOrNull()
         ?: return 0
     return first.userMessage.createdAt.toInstant(timeZone).toEpochMilliseconds() - 1
 }
@@ -382,6 +409,7 @@ internal fun pendingMemoryTurns(
     updatedAt: Long,
     consolidatedAt: Long,
     timeZone: TimeZone = TimeZone.currentSystemDefault(),
+    learningMode: Boolean = false,
 ): PendingMemoryTurns {
     fun UIMessage.time() = createdAt.toInstant(timeZone).toEpochMilliseconds()
 
@@ -395,7 +423,7 @@ internal fun pendingMemoryTurns(
         consolidatedThrough = last.userMessage.time() - 1
     }
 
-    pending = pending.filter { it.hasUserText }
+    pending = pending.filter { it.hasConsolidatableInput(learningMode) }
     val batch = pending.take(MAX_TURNS_PER_CONVERSATION)
     if (batch.isNotEmpty()) {
         val batchEnd = batch.last().userMessage.time()
@@ -420,11 +448,29 @@ internal fun pendingMemoryTurns(
  * 转成给整理器看的文本，每条消息带上位置编号，方便它用 conversation_read 读被截断的部分。
  *
  * 主对话里按用户要求改过记忆的地方单独标一行，整理器要以用户的明确修改为准。
+ * [userLength] 或 [assistantLength] 为 null 时不截断对应角色的长文本（学习模式下完整保留助手批改与讲解）。
  */
-internal fun List<IndexedValue<UIMessage>>.toMemoryTranscript(userLength: Int, assistantLength: Int): String =
+internal fun List<IndexedValue<UIMessage>>.toMemoryTranscript(
+    userLength: Int?,
+    assistantLength: Int?,
+    learningMode: Boolean = false,
+): String =
     flatMap { (position, message) ->
         val maxLength = if (message.role == MessageRole.USER) userLength else assistantLength
-        val text = message.toText().trim().let { if (it.length > maxLength) it.take(maxLength) + "..." else it }
+        val rawText = message.toText().trim().let {
+            if (maxLength != null && it.length > maxLength) it.take(maxLength) + "..." else it
+        }
+        val imageCount = if (learningMode && message.role == MessageRole.USER) {
+            message.parts.count { it is UIMessagePart.Image }
+        } else {
+            0
+        }
+        val text = if (imageCount > 0) {
+            val note = "[user attached $imageCount image(s); you cannot see them, use the assistant's reply for problem & diagnosis details]"
+            if (rawText.isEmpty()) note else "$rawText\n$note"
+        } else {
+            rawText
+        }
         val memoryWrites = message.getTools().mapNotNull { tool ->
             tool.memoryWritePath()?.let { "[assistant updated memory: ${tool.toolName} $it]" }
         }

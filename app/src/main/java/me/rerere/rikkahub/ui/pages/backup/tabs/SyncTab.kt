@@ -375,7 +375,7 @@ fun SyncTab(
                         value = syncConfig.serverUrl,
                         onValueChange = { updateConfig { cfg -> cfg.copy(serverUrl = it) } },
                         label = { Text(stringResource(R.string.backup_page_sync_server_url)) },
-                        placeholder = { Text("http://45.207.200.189:8765") },
+                        placeholder = { Text("https://sync.qingningplayer.top") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )

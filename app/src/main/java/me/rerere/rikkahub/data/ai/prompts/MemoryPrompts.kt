@@ -111,6 +111,13 @@ private val MEMORY_SYSTEM_RULES = """
     The format rules for writing are in <memory_format> below (shared with the background process).
 """.trimIndent()
 
+private val MEMORY_SYSTEM_LEARNING_RULES = """
+    ## Learning mode
+
+    - Learning mode is enabled for this assistant: memory files under /areas/learning/ record the user's subject weak points, misconceptions and recurring mistake patterns.
+    - Even when the user asks a general subject or problem-solving question, if memory_listing has a relevant file under /areas/learning/ (e.g. /areas/learning/physics.md, /areas/learning/math.md), call memory_read before answering so you can address their known weak points and mistake patterns naturally in your explanation.
+""".trimIndent()
+
 private val MEMORY_CONSOLIDATION_INTRO = """
     You are the memory organizer. You are given the user's current memory store and the conversation turns that finished since the store was last organized.
     Your job is to decide whether those turns contain new information worth keeping long term. If they do, write it with the tools; if not, do nothing.
@@ -137,6 +144,30 @@ private val MEMORY_CONSOLIDATION_WORKFLOW = """
     When done, output a one-line summary (what you wrote, or "none") and nothing else.
 """.trimIndent()
 
+private val MEMORY_LEARNING_MODE_PROMPT = """
+    ## Learning mode
+
+    This assistant is used for study and tutoring. Learning mode is enabled: in addition to [stated] facts from the user, you must also extract and maintain a learning profile from both the user's input and the assistant's output, tagged [observed].
+
+    What to record as [observed]:
+    - Mistakes in the user's own work that the assistant identified or corrected (wrong steps, wrong formulas, sign errors, misread conditions).
+    - Misconceptions or confusion revealed by the user's questions ("I thought...", "why isn't it...").
+    - Knowledge points or problem types the user could not solve, guessed on, or asked to have explained.
+    The assistant's explanations are primary evidence of what the user got wrong (especially when the user sent problem photos that only the assistant's reply describes). Record the user's underlying weakness or mistake pattern, not the full problem text or solution steps.
+
+    Where to write:
+    - /areas/learning/<subject>.md (e.g. math, physics, chemistry, biology, english, chinese): one file per subject, grouped by chapter or topic. Each entry names the knowledge point and the specific error pattern, ending with the date, e.g.:
+      "- [observed] 动能定理：把阻力做功当作正功加在等式左边，混淆“阻力做功”与“克服阻力做功”的符号 (2026-11-07)"
+    - /profile.md: grade, exam track, subjects, and self-assessed foundation stated by the user.
+    - /preferences.md: how the user wants problems or concepts explained.
+
+    Rules for learning records:
+    - One concise bullet per distinct weakness. When the same weakness recurs, update the existing line with the new date instead of duplicating it.
+    - When the user later demonstrates mastery of a previously recorded weakness, update the line to note improvement rather than deleting it.
+    - Do not record problems the user solved correctly without confusion.
+    - In learning mode, any tutoring turn that diagnoses mistakes or explains a knowledge gap should produce learning records; "Most runs should produce zero to two records, often zero" does not apply to learning observations.
+""".trimIndent()
+
 // 用户手动触发时才做：全库重写没有新证据支撑，也没有历史版本可以回退
 private val MEMORY_FULL_REVIEW_PROMPT = """
     ## Full review
@@ -151,12 +182,28 @@ private val MEMORY_FULL_REVIEW_PROMPT = """
 """.trimIndent()
 
 /** 后台记忆整理的 system prompt；[fullReview] 时除了提取新对话，还把整个记忆库清理一遍 */
-internal fun buildMemoryConsolidationPrompt(fullReview: Boolean): String = buildString {
+internal fun buildMemoryConsolidationPrompt(
+    fullReview: Boolean,
+    learningMode: Boolean = false,
+): String = buildString {
     appendLine(MEMORY_CONSOLIDATION_INTRO)
     appendLine()
     appendLine(MEMORY_FORMAT_PROMPT)
     appendLine()
-    append(MEMORY_CONSOLIDATION_WORKFLOW)
+    val workflow = if (learningMode) {
+        MEMORY_CONSOLIDATION_WORKFLOW.replace(
+            "Extract only from what the user said; what the assistant said only helps you understand what the user was responding to.",
+            "Extract [stated] facts only from what the user said. In learning mode, also list learning observations (see Learning mode), using both the user's input and the assistant's explanations as evidence of the user's mistakes.",
+        )
+    } else {
+        MEMORY_CONSOLIDATION_WORKFLOW
+    }
+    append(workflow)
+    if (learningMode) {
+        appendLine()
+        appendLine()
+        append(MEMORY_LEARNING_MODE_PROMPT)
+    }
     if (fullReview) {
         appendLine()
         appendLine()
@@ -165,13 +212,20 @@ internal fun buildMemoryConsolidationPrompt(fullReview: Boolean): String = build
 }
 
 /** 主对话 system prompt 里的记忆片段：全文注入 profile 和 preferences，其余文件只给清单 */
-internal fun buildMemoryPrompt(files: List<MemoryFile>): String = buildString {
+internal fun buildMemoryPrompt(
+    files: List<MemoryFile>,
+    learningMode: Boolean = false,
+): String = buildString {
     appendLine("<memory_system>")
     appendLine(MEMORY_SYSTEM_INTRO)
     appendLine()
     appendMemoryState(files)
     appendLine()
     appendLine(MEMORY_SYSTEM_RULES)
+    if (learningMode) {
+        appendLine()
+        appendLine(MEMORY_SYSTEM_LEARNING_RULES)
+    }
     appendLine("</memory_system>")
     appendLine()
     appendLine(MEMORY_FORMAT_PROMPT)

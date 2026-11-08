@@ -215,7 +215,7 @@ class ChatRequestFactory(
                 // 记忆
                 if (assistant.enableMemory) {
                     appendLine()
-                    append(buildMemoryPrompt(turn.memories))
+                    append(buildMemoryPrompt(turn.memories, learningMode = assistant.learningMemoryMode))
                 }
                 // 工具prompt
                 turn.tools.forEach { tool ->

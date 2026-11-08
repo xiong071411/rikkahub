@@ -1622,6 +1622,8 @@
   <string name="chat_input_reasoning_placeholder">Reasoning content</string>
   <string name="assistant_page_memory_auto_dream">Auto dream</string>
   <string name="assistant_page_memory_auto_dream_desc">Turn chats into memories in the background once they pause. When off, this only happens when you tap Dream now</string>
+  <string name="assistant_page_memory_learning_mode">Learning mode</string>
+  <string name="assistant_page_memory_learning_mode_desc">Organize weak points and mistake patterns from both user input and assistant output without truncating long assistant replies</string>
   <string name="chat_message_usage_title">Usage</string>
   <string name="chat_message_usage_steps">%1$d steps</string>
   <string name="chat_message_usage_context_short">%1$s ctx</string>
