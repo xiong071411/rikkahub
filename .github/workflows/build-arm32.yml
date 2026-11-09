@@ -165,7 +165,7 @@ jobs:
 
       - name: Test image crop regressions
         run: |
-          ./gradlew :ui:testDebugUnitTest --tests '*ImageCropStateTest' \
+          ./gradlew :ui:testDebugUnitTest --tests '*ImageCropStateTest' --tests '*FunctionPlotSpecTest' \
             --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
 

@@ -57,12 +57,6 @@ import kotlinx.datetime.toLocalDateTime
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Copy01
 import me.rerere.hugeicons.stroke.Download04
-import me.rerere.rikkahub.data.datastore.Settings
-import me.rerere.rikkahub.data.repository.WorkspaceRepository
-import me.rerere.rikkahub.ui.context.LocalSettings
-import me.rerere.rikkahub.ui.context.LocalWorkspaceId
-import me.rerere.rikkahub.ui.modifier.onClick
-import me.rerere.rikkahub.ui.theme.JetbrainsMono
 import me.rerere.bettertext.latex.LatexInline
 import me.rerere.bettertext.markdown.InlineDecoration
 import me.rerere.bettertext.markdown.MarkdownBlock
@@ -74,9 +68,19 @@ import me.rerere.bettertext.text.ComposableInline
 import me.rerere.bettertext.text.DrawnInline
 import me.rerere.bettertext.text.InlineAlign
 import me.rerere.bettertext.text.InlineMetrics
+import me.rerere.rikkahub.data.datastore.Settings
+import me.rerere.rikkahub.data.repository.WorkspaceRepository
+import me.rerere.rikkahub.ui.context.LocalSettings
+import me.rerere.rikkahub.ui.context.LocalWorkspaceId
+import me.rerere.rikkahub.ui.modifier.onClick
+import me.rerere.rikkahub.ui.theme.JetbrainsMono
+import me.rerere.ui.charts.FunctionPlotCard
+import me.rerere.ui.charts.FunctionPlotSpec
 import org.koin.compose.koinInject
 import kotlin.math.roundToInt
 import kotlin.time.Clock
+
+private val FUNCTION_PLOT_LANGUAGES = setOf("function-plot", "function_plot", "plot")
 
 @Preview(showBackground = true)
 @Composable
@@ -144,6 +148,7 @@ fun MarkdownBlock(
     onClickCitation: (String) -> Unit = {}
 ) {
     val enableLatexRendering = LocalSettings.current.displaySetting.enableLatexRendering
+    val enableFunctionPlotRendering = LocalSettings.current.displaySetting.enableFunctionPlotRendering
     val enableQuoteHighlight = LocalSettings.current.displaySetting.enableQuoteHighlight
     val fontSize = LocalTextStyle.current.merge(style).fontSize
     val density = LocalDensity.current
@@ -162,15 +167,33 @@ fun MarkdownBlock(
     }
 
     val currentOnClickCitation by rememberUpdatedState(onClickCitation)
-    val components = remember(enableLatexRendering) {
+    val components = remember(enableLatexRendering, enableFunctionPlotRendering) {
         MarkdownComponents(
             codeBlock = { block ->
-                HighlightCodeBlock(
-                    code = block.code,
-                    language = block.language ?: "plaintext",
-                    modifier = Modifier.fillMaxWidth(),
-                    completeCodeBlock = block.closed,
-                )
+                val language = block.language ?: "plaintext"
+                val isFunctionPlot = enableFunctionPlotRendering &&
+                    block.closed &&
+                    language.lowercase() in FUNCTION_PLOT_LANGUAGES
+                if (isFunctionPlot) {
+                    val spec = remember(block.code) { FunctionPlotSpec.fromJson(block.code) }
+                    if (spec != null) {
+                        FunctionPlotCard(spec = spec, modifier = Modifier.fillMaxWidth())
+                    } else {
+                        HighlightCodeBlock(
+                            code = block.code,
+                            language = language,
+                            modifier = Modifier.fillMaxWidth(),
+                            completeCodeBlock = block.closed,
+                        )
+                    }
+                } else {
+                    HighlightCodeBlock(
+                        code = block.code,
+                        language = language,
+                        modifier = Modifier.fillMaxWidth(),
+                        completeCodeBlock = block.closed,
+                    )
+                }
             },
             image = { image, _ ->
                 ZoomableAsyncImage(

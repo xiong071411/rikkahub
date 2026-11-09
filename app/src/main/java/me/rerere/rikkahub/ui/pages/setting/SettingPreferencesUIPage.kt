@@ -212,6 +212,12 @@ fun SettingPreferencesUIPage(vm: SettingVM = koinViewModel()) {
                         headlineContent = { Text(stringResource(R.string.setting_display_page_enable_latex_rendering_title)) },
                     )
                     switchItem(
+                        checked = displaySetting.enableFunctionPlotRendering,
+                        onCheckedChange = { updateDisplaySetting(displaySetting.copy(enableFunctionPlotRendering = it)) },
+                        supportingContent = { Text(stringResource(R.string.setting_display_page_enable_function_plot_rendering_desc)) },
+                        headlineContent = { Text(stringResource(R.string.setting_display_page_enable_function_plot_rendering_title)) },
+                    )
+                    switchItem(
                         checked = displaySetting.enableQuoteHighlight,
                         onCheckedChange = { updateDisplaySetting(displaySetting.copy(enableQuoteHighlight = it)) },
                         supportingContent = { Text(stringResource(R.string.setting_display_page_enable_quote_highlight_desc)) },

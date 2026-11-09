@@ -17,6 +17,7 @@ import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.limitContext
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.prompts.FUNCTION_PLOT_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.buildMemoryPrompt
 import me.rerere.rikkahub.data.ai.tools.ChatToolFactory
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
@@ -210,6 +211,11 @@ class ChatRequestFactory(
                     }
                 if (effectiveSystemPrompt.isNotBlank()) {
                     append(effectiveSystemPrompt)
+                }
+
+                if (turn.settings.displaySetting.enableFunctionPlotRendering) {
+                    appendLine()
+                    append(FUNCTION_PLOT_PROMPT)
                 }
 
                 // 记忆
