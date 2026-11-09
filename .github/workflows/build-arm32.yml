@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - personal-main
+      - feat/memory-learning-mode-206
       - arm32
       - arm32-scale50
       - main
