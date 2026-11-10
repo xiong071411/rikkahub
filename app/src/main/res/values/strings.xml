@@ -1799,4 +1799,6 @@
   <string name="setting_model_page_memory_model">Memory Consolidation Model</string>
   <string name="setting_model_page_memory_model_desc">Model used to organize conversations into long-term memory in the background; uses the fast model when not set</string>
   <string name="setting_model_page_memory_model_follow_fast">Same as fast model</string>
+  <string name="setting_display_page_enable_chemical_structure_rendering_title">Render Chemical Structures</string>
+  <string name="setting_display_page_enable_chemical_structure_rendering_desc">Render molecular structures and simple reaction schemes in chat</string>
 </resources>

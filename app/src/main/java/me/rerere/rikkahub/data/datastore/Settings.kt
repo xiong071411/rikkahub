@@ -168,6 +168,7 @@ data class DisplaySetting(
     val enableAutoScroll: Boolean = true,
     val enableLatexRendering: Boolean = true,
     val enableFunctionPlotRendering: Boolean = true,
+    val enableChemicalStructureRendering: Boolean = true,
     val enableQuoteHighlight: Boolean = false,
     val enableBlurEffect: Boolean = false,
     val backgroundEffectType: BackgroundEffectType = BackgroundEffectType.BLUR,

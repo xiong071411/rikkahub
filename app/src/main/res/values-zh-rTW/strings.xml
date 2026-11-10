@@ -1785,4 +1785,6 @@
   <string name="setting_model_page_memory_model">記憶整理模型</string>
   <string name="setting_model_page_memory_model_desc">用於在背景將對話整理為長期記憶的模型；未設定時會使用快速模型</string>
   <string name="setting_model_page_memory_model_follow_fast">跟隨快速模型</string>
+  <string name="setting_display_page_enable_chemical_structure_rendering_title">渲染化學結構</string>
+  <string name="setting_display_page_enable_chemical_structure_rendering_desc">在聊天中呈現分子結構與簡單反應式</string>
 </resources>

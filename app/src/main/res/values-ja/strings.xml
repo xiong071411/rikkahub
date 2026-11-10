@@ -1783,4 +1783,6 @@ mDNSアドレス: .localホスト名を使用し、IPを知らなくても同じ
   <string name="setting_model_page_memory_model">記憶整理モデル</string>
   <string name="setting_model_page_memory_model_desc">バックグラウンドで会話を長期記憶に整理するために使用されるモデル。未設定の場合は高速モデルを使用します</string>
   <string name="setting_model_page_memory_model_follow_fast">高速モデルと同じ</string>
+  <string name="setting_display_page_enable_chemical_structure_rendering_title">化学構造を表示</string>
+  <string name="setting_display_page_enable_chemical_structure_rendering_desc">チャットで分子構造と簡単な反応式を表示します</string>
 </resources>

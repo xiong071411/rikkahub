@@ -32,7 +32,12 @@ class SyncSettingsContractTest {
     fun `new device receives all shared settings while keeping device credentials`() {
         val source = Settings(
             dynamicColor = false, themeId = "my-theme",
-            displaySetting = DisplaySetting(messageJumperOnLeft = true, showMessageJumper = false, fontSizeRatio = 1.3f),
+            displaySetting = DisplaySetting(
+                messageJumperOnLeft = true,
+                showMessageJumper = false,
+                fontSizeRatio = 1.3f,
+                enableChemicalStructureRendering = true,
+            ),
             fastModelReasoningLevel = ReasoningLevel.HIGH,
             memoryModelId = Uuid.random(), memoryModelReasoningLevel = ReasoningLevel.HIGH,
             imageGenerationModelId = Uuid.random(), translateModeId = Uuid.random(), translateThinkingBudget = 2048,
@@ -53,6 +58,7 @@ class SyncSettingsContractTest {
         assertEquals("target-private", actual.webServerAccessPassword)
         assertFalse(extras.values.joinToString().contains("source-private-password"))
         assertTrue(actual.displaySetting.messageJumperOnLeft)
+        assertTrue(actual.displaySetting.enableChemicalStructureRendering)
     }
 
     @Test

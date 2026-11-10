@@ -29,6 +29,7 @@ dependencies {
     implementation(libs.huge.icons)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.openchemlib)
 
     testImplementation(libs.junit)
 }

@@ -1783,4 +1783,6 @@
   <string name="setting_model_page_memory_model">Модель консолидации памяти</string>
   <string name="setting_model_page_memory_model_desc">Модель, которая организует диалоги в долговременную память в фоновом режиме; если не задана, используется быстрая модель</string>
   <string name="setting_model_page_memory_model_follow_fast">Как у быстрой модели</string>
+  <string name="setting_display_page_enable_chemical_structure_rendering_title">Отображать химические структуры</string>
+  <string name="setting_display_page_enable_chemical_structure_rendering_desc">Показывать молекулярные структуры и простые реакции в чате</string>
 </resources>

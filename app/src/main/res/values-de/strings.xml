@@ -1784,4 +1784,6 @@
   <string name="setting_model_page_memory_model">Erinnerungskonsolidierungsmodell</string>
   <string name="setting_model_page_memory_model_desc">Modell, das Konversationen im Hintergrund in langfristige Erinnerungen organisiert; verwendet das schnelle Modell, wenn nicht festgelegt</string>
   <string name="setting_model_page_memory_model_follow_fast">Wie das schnelle Modell</string>
+  <string name="setting_display_page_enable_chemical_structure_rendering_title">Chemische Strukturen darstellen</string>
+  <string name="setting_display_page_enable_chemical_structure_rendering_desc">Molekülstrukturen und einfache Reaktionen im Chat anzeigen</string>
 </resources>

@@ -1781,4 +1781,6 @@
   <string name="setting_model_page_memory_model">نموذج توطيد الذاكرة</string>
   <string name="setting_model_page_memory_model_desc">النموذج المستخدم لتنظيم المحادثات في الذاكرة طويلة المدى في الخلفية؛ يستخدم النموذج السريع عند عدم تعيينه</string>
   <string name="setting_model_page_memory_model_follow_fast">نفس النموذج السريع</string>
+  <string name="setting_display_page_enable_chemical_structure_rendering_title">عرض التراكيب الكيميائية</string>
+  <string name="setting_display_page_enable_chemical_structure_rendering_desc">عرض تراكيب الجزيئات والتفاعلات البسيطة في الدردشة</string>
 </resources>

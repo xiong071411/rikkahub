@@ -76,11 +76,14 @@ import me.rerere.rikkahub.ui.modifier.onClick
 import me.rerere.rikkahub.ui.theme.JetbrainsMono
 import me.rerere.ui.charts.FunctionPlotCard
 import me.rerere.ui.charts.FunctionPlotSpec
+import me.rerere.ui.chemistry.ChemicalStructureBlock
+import me.rerere.ui.chemistry.ChemicalStructureSpec
 import org.koin.compose.koinInject
 import kotlin.math.roundToInt
 import kotlin.time.Clock
 
 private val FUNCTION_PLOT_LANGUAGES = setOf("function-plot", "function_plot", "plot")
+private val CHEMICAL_STRUCTURE_LANGUAGES = setOf("chemical-structure", "chemical_structure", "chemistry")
 
 @Preview(showBackground = true)
 @Composable
@@ -149,6 +152,7 @@ fun MarkdownBlock(
 ) {
     val enableLatexRendering = LocalSettings.current.displaySetting.enableLatexRendering
     val enableFunctionPlotRendering = LocalSettings.current.displaySetting.enableFunctionPlotRendering
+    val enableChemicalStructureRendering = LocalSettings.current.displaySetting.enableChemicalStructureRendering
     val enableQuoteHighlight = LocalSettings.current.displaySetting.enableQuoteHighlight
     val fontSize = LocalTextStyle.current.merge(style).fontSize
     val density = LocalDensity.current
@@ -167,14 +171,36 @@ fun MarkdownBlock(
     }
 
     val currentOnClickCitation by rememberUpdatedState(onClickCitation)
-    val components = remember(enableLatexRendering, enableFunctionPlotRendering) {
+    val components = remember(enableLatexRendering, enableFunctionPlotRendering, enableChemicalStructureRendering) {
         MarkdownComponents(
             codeBlock = { block ->
                 val language = block.language ?: "plaintext"
                 val isFunctionPlot = enableFunctionPlotRendering &&
                     block.closed &&
                     language.lowercase() in FUNCTION_PLOT_LANGUAGES
-                if (isFunctionPlot) {
+                val isChemicalStructure = enableChemicalStructureRendering &&
+                    block.closed &&
+                    language.lowercase() in CHEMICAL_STRUCTURE_LANGUAGES
+                if (isChemicalStructure) {
+                    val spec = remember(block.code) { ChemicalStructureSpec.fromJson(block.code) }
+                    if (spec != null) {
+                        ChemicalStructureBlock(spec = spec, modifier = Modifier.fillMaxWidth()) {
+                            HighlightCodeBlock(
+                                code = block.code,
+                                language = language,
+                                modifier = Modifier.fillMaxWidth(),
+                                completeCodeBlock = block.closed,
+                            )
+                        }
+                    } else {
+                        HighlightCodeBlock(
+                            code = block.code,
+                            language = language,
+                            modifier = Modifier.fillMaxWidth(),
+                            completeCodeBlock = block.closed,
+                        )
+                    }
+                } else if (isFunctionPlot) {
                     val spec = remember(block.code) { FunctionPlotSpec.fromJson(block.code) }
                     if (spec != null) {
                         FunctionPlotCard(spec = spec, modifier = Modifier.fillMaxWidth())
