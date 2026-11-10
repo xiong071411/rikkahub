@@ -42,6 +42,7 @@ class SyncSettingsContractTest {
             memoryModelId = Uuid.random(), memoryModelReasoningLevel = ReasoningLevel.HIGH,
             imageGenerationModelId = Uuid.random(), translateModeId = Uuid.random(), translateThinkingBudget = 2048,
             ocrModelId = Uuid.random(), searchServiceSelected = 1,
+            enableAutoCompress = true, autoCompressThreshold = 0.9f,
             selectedTTSProviderId = Uuid.random(), selectedASRProviderId = Uuid.random(),
             titlePrompt = "", webServerAccessPassword = "source-private-password",
         )

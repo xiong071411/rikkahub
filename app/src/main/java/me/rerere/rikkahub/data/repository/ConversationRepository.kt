@@ -24,7 +24,9 @@ import me.rerere.rikkahub.data.db.fts.MessageSearchSort
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.MessageNode
+import me.rerere.rikkahub.data.model.NodeFavoriteTarget
 import me.rerere.rikkahub.data.sync.v2.AttachmentPathNormalizer.toPortableAttachmentPaths
+import me.rerere.rikkahub.data.sync.v2.FavoriteSyncV2Payload
 import me.rerere.rikkahub.data.sync.v2.SyncMutationRecorder
 import me.rerere.rikkahub.data.sync.v2.isApplyingRemoteSync
 import me.rerere.rikkahub.utils.JsonInstant
@@ -361,23 +363,55 @@ class ConversationRepository(
         recordConversationUpsert(conversation)
     }
 
-    suspend fun deleteConversation(conversation: Conversation) {
+    suspend fun deleteConversation(conversation: Conversation, deleteFiles: Boolean = true) {
         // 获取完整的 Conversation（包含 messageNodes）以正确清理文件
         val fullConversation = if (conversation.messageNodes.isEmpty()) {
             getConversationById(conversation.id) ?: conversation
         } else {
             conversation
         }
-        messageFtsManager.deleteConversation(conversation.id.toString())
+        val conversationId = conversation.id.toString()
+        messageFtsManager.deleteConversation(conversationId)
         database.withTransaction {
+            // 收藏表和会话没有外键，要单独删
+            favoriteDAO.deleteNodeFavoritesOfConversation(conversationId)
             // message_node 会通过 CASCADE 自动删除
             conversationDAO.delete(
                 conversationToConversationEntity(conversation)
             )
             syncTombstoneManager.recordTombstone(conversation.id.toString(), "conversation")
         }
-        filesManager.deleteChatFiles(fullConversation.files)
+        if (deleteFiles) filesManager.deleteChatFiles(fullConversation.files)
         syncMutationRecorder?.recordDelete("conversation", conversation.id.toString())
+    }
+
+    /** 删除这些节点的收藏，节点从会话里移除后调用 */
+    suspend fun deleteNodeFavorites(conversationId: Uuid, nodeIds: Collection<Uuid>) {
+        nodeIds
+            .map { NodeFavoriteAdapter.buildRefKey(conversationId.toString(), it.toString()) }
+            .chunked(500)
+            .forEach { favoriteDAO.deleteByRefKeys(it) }
+    }
+
+    /** 撤销删除后根据会话快照恢复节点收藏，并把恢复记录纳入 Sync V2。 */
+    suspend fun restoreNodeFavorites(conversation: Conversation) {
+        conversation.messageNodes.filter { it.isFavorite }.forEach { node ->
+            val target = NodeFavoriteTarget(
+                conversationId = conversation.id,
+                conversationTitle = conversation.title,
+                nodeId = node.id,
+                node = node,
+            )
+            val refKey = NodeFavoriteAdapter.buildRefKey(target)
+            val existing = favoriteDAO.getByRefKey(refKey)
+            val favorite = NodeFavoriteAdapter.buildFavoriteEntity(target, existing)
+            favoriteDAO.upsert(favorite)
+            syncMutationRecorder?.recordUpsert(
+                entityType = "favorite",
+                entityId = favorite.id,
+                rawPayloadJson = JsonInstant.encodeToString(FavoriteSyncV2Payload.fromEntity(favorite)),
+            )
+        }
     }
 
     suspend fun searchMessages(

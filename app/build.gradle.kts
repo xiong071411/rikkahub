@@ -148,6 +148,17 @@ android {
     sourceSets {
         getByName("androidTest").assets.srcDirs("$projectDir/schemas")
         getByName("test").resources.srcDirs("$projectDir/schemas")
+        // Personal coexisting variants are non-Play builds, so they share GitHub's Phone Use service.
+        getByName("coexist") {
+            java.srcDir("src/github/java")
+            res.srcDir("src/github/res")
+            manifest.srcFile("src/github/AndroidManifest.xml")
+        }
+        getByName("coexistNormal") {
+            java.srcDir("src/github/java")
+            res.srcDir("src/github/res")
+            manifest.srcFile("src/github/AndroidManifest.xml")
+        }
     }
     androidResources {
         generateLocaleConfig = true

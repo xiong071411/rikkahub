@@ -15,7 +15,7 @@ import java.io.File
 /** 同步范围只有这一份定义；测试用 Settings 序列化描述符检查新增字段必须明确归类。 */
 object SyncSettingsContract {
     const val PREFERENCES_KEY = "app_preferences_v2"
-    const val COVERAGE_VERSION = "3"
+    const val COVERAGE_VERSION = "4"
 
     val collectionFields = linkedMapOf(
         "assistant_tags" to "assistantTags", "lorebooks" to "lorebooks",
@@ -35,7 +35,7 @@ object SyncSettingsContract {
         "dynamicColor", "themeId", "displaySetting", "fastModelReasoningLevel",
         "memoryModelId", "memoryModelReasoningLevel", "imageGenerationModelId", "translateModeId",
         "translateThinkingBudget", "ocrModelId", "searchCommonOptions", "searchServiceSelected",
-        "selectedTTSProviderId", "selectedASRProviderId",
+        "selectedTTSProviderId", "selectedASRProviderId", "enableAutoCompress", "autoCompressThreshold",
     )
     val sharedFields =
         collectionFields.values.toSet() + legacyAiFields + preferenceFields + setOf("assistants", "providers")
