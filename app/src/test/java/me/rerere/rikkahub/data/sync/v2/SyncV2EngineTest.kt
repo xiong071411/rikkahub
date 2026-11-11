@@ -1019,6 +1019,17 @@ private class FakeFavoriteDao : FavoriteDAO {
     override fun listByType(type: String): Flow<List<FavoriteEntity>> = MutableStateFlow(emptyList())
     override suspend fun getRefKeysByType(type: String): List<String> = emptyList()
     override suspend fun getFavoriteNodeIdsOfConversation(conversationId: String): List<String> = emptyList()
+    override suspend fun deleteNodeFavoritesOfConversation(conversationId: String): Int {
+        val prefix = "node:$conversationId:"
+        val ids = map.values.filter { it.refKey.startsWith(prefix) }.map { it.id }
+        ids.forEach(map::remove)
+        return ids.size
+    }
+    override suspend fun deleteByRefKeys(refKeys: List<String>): Int {
+        val ids = map.values.filter { it.refKey in refKeys }.map { it.id }
+        ids.forEach(map::remove)
+        return ids.size
+    }
     override suspend fun getByRefKey(refKey: String): FavoriteEntity? = map.values.firstOrNull { it.refKey == refKey }
     override suspend fun existsByRefKey(refKey: String): Boolean = map.values.any { it.refKey == refKey }
     override suspend fun deleteByRefKey(refKey: String): Int = 0
