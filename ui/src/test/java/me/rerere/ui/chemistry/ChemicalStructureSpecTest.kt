@@ -58,6 +58,29 @@ class ChemicalStructureSpecTest {
     }
 
     @Test
+    fun `parses and lays out a polymer repeat unit with continuation atoms`() {
+        val spec = ChemicalStructureSpec.fromJson(
+            """{"version":1,"type":"polymer","name":"Polyethylene","repeatUnit":{"smiles":"CC","leftAtom":0,"rightAtom":1}}""",
+        )
+
+        assertNotNull(spec)
+        assertEquals(ChemicalStructureType.POLYMER, spec!!.type)
+        assertEquals("n", spec.repeatLabel)
+        val diagram = buildChemicalMoleculeDiagram(spec.reactants.single())
+        assertNotNull(diagram.repeatBounds)
+        assertTrue(diagram.primitives.isNotEmpty())
+    }
+
+    @Test
+    fun `rejects polymer continuation atoms that are not terminal`() {
+        val spec = ChemicalStructureSpec.fromJson(
+            """{"version":1,"type":"polymer","repeatUnit":{"smiles":"C1CC1","leftAtom":0,"rightAtom":1}}""",
+        )
+        assertNotNull(spec)
+        assertTrue(runCatching { buildChemicalMoleculeDiagram(spec!!.reactants.single()) }.isFailure)
+    }
+
+    @Test
     fun `rejects invalid or unbounded specifications and invalid smiles`() {
         assertNull(ChemicalStructureSpec.fromJson("""{"type":"molecule","smiles":"C"}"""))
         assertNull(ChemicalStructureSpec.fromJson("""{"version":1,"type":"molecule","smiles":"C C"}"""))

@@ -78,12 +78,15 @@ import me.rerere.ui.charts.FunctionPlotCard
 import me.rerere.ui.charts.FunctionPlotSpec
 import me.rerere.ui.chemistry.ChemicalStructureBlock
 import me.rerere.ui.chemistry.ChemicalStructureSpec
+import me.rerere.ui.diagrams.VisualDiagramCard
+import me.rerere.ui.diagrams.VisualDiagramSpec
 import org.koin.compose.koinInject
 import kotlin.math.roundToInt
 import kotlin.time.Clock
 
 private val FUNCTION_PLOT_LANGUAGES = setOf("function-plot", "function_plot", "plot")
 private val CHEMICAL_STRUCTURE_LANGUAGES = setOf("chemical-structure", "chemical_structure", "chemistry")
+private val VISUAL_DIAGRAM_LANGUAGES = setOf("visual-diagram", "visual_diagram", "diagram")
 
 @Preview(showBackground = true)
 @Composable
@@ -181,7 +184,20 @@ fun MarkdownBlock(
                 val isChemicalStructure = enableChemicalStructureRendering &&
                     block.closed &&
                     language.lowercase() in CHEMICAL_STRUCTURE_LANGUAGES
-                if (isChemicalStructure) {
+                val isVisualDiagram = block.closed && language.lowercase() in VISUAL_DIAGRAM_LANGUAGES
+                if (isVisualDiagram) {
+                    val spec = remember(block.code) { VisualDiagramSpec.fromJson(block.code) }
+                    if (spec != null) {
+                        VisualDiagramCard(spec = spec, modifier = Modifier.fillMaxWidth())
+                    } else {
+                        HighlightCodeBlock(
+                            code = block.code,
+                            language = language,
+                            modifier = Modifier.fillMaxWidth(),
+                            completeCodeBlock = block.closed,
+                        )
+                    }
+                } else if (isChemicalStructure) {
                     val spec = remember(block.code) { ChemicalStructureSpec.fromJson(block.code) }
                     if (spec != null) {
                         ChemicalStructureBlock(spec = spec, modifier = Modifier.fillMaxWidth()) {

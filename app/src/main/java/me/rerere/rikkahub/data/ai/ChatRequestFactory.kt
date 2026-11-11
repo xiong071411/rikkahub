@@ -25,6 +25,7 @@ import me.rerere.ai.ui.limitContext
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.ai.prompts.CHEMICAL_STRUCTURE_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.FUNCTION_PLOT_PROMPT
+import me.rerere.rikkahub.data.ai.prompts.VISUAL_DIAGRAM_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.buildMemoryPrompt
 import me.rerere.rikkahub.data.ai.tools.ChatToolFactory
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
@@ -248,6 +249,9 @@ class ChatRequestFactory(
                     appendLine()
                     append(FUNCTION_PLOT_PROMPT)
                 }
+
+                appendLine()
+                append(VISUAL_DIAGRAM_PROMPT)
 
                 if (turn.settings.displaySetting.enableChemicalStructureRendering) {
                     appendLine()
