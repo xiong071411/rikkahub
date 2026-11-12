@@ -102,6 +102,7 @@ private fun ChemicalStructureCard(
 ) {
     DiagramCardFrame(title = spec.name, modifier = modifier) { contentModifier, isFullScreen ->
         BoxWithConstraints(contentModifier) {
+            val availableWidth = maxWidth.value
             Column(
                 modifier = if (isFullScreen) Modifier.fillMaxSize() else Modifier,
                 verticalArrangement = if (isFullScreen) Arrangement.Center else Arrangement.spacedBy(8.dp),
@@ -110,7 +111,7 @@ private fun ChemicalStructureCard(
                     MoleculeItem(
                         diagram = reactants.single(),
                         modifier = Modifier.align(Alignment.CenterHorizontally),
-                        width = minOf(maxWidth.value, if (isFullScreen) 760f else 320f),
+                        width = minOf(availableWidth, if (isFullScreen) 760f else 320f),
                         repeatLabel = spec.repeatLabel,
                     )
                 } else {
