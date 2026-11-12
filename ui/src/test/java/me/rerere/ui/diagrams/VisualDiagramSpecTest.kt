@@ -29,6 +29,20 @@ class VisualDiagramSpecTest {
     }
 
     @Test
+    fun `parses centered rectangles emitted in model diagrams`() {
+        val spec = VisualDiagramSpec.fromJson(
+            """{"version":1,"width":120,"height":75,"elements":[{"type":"rect","center":[48,38],"width":12,"height":8,"color":"primary","fill":"secondary"}]}""",
+        )
+
+        assertNotNull(spec)
+        val rectangle = spec!!.elements.single() as VisualDiagramElement.Rectangle
+        assertEquals(42f, rectangle.x)
+        assertEquals(34f, rectangle.y)
+        assertEquals(12f, rectangle.width)
+        assertEquals(8f, rectangle.height)
+    }
+
+    @Test
     fun `rejects executable shapes invalid coordinates and too many elements`() {
         assertNull(VisualDiagramSpec.fromJson("""{"version":1,"width":100,"height":70,"elements":[{"type":"script","code":"alert(1)"}]}"""))
         assertNull(VisualDiagramSpec.fromJson("""{"version":1,"width":100,"height":70,"elements":[{"type":"line","from":[-1,4],"to":[2,3]}]}"""))

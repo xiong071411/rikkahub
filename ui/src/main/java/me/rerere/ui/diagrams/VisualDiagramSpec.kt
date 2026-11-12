@@ -150,11 +150,15 @@ private fun parseElement(element: JsonElement, width: Float, height: Float): Vis
         }
 
         "rect" -> {
-            val x = obj.number("x") ?: error("Missing x")
-            val y = obj.number("y") ?: error("Missing y")
             val rectWidth = obj.number("width") ?: error("Missing width")
             val rectHeight = obj.number("height") ?: error("Missing height")
             require(rectWidth > 0f && rectHeight > 0f)
+            val (x, y) = if (obj["center"] != null) {
+                val center = obj.point("center", width, height)
+                (center.x - rectWidth / 2f) to (center.y - rectHeight / 2f)
+            } else {
+                (obj.number("x") ?: error("Missing x")) to (obj.number("y") ?: error("Missing y"))
+            }
             requirePoint(x, y, width, height)
             requirePoint(x + rectWidth, y + rectHeight, width, height)
             VisualDiagramElement.Rectangle(
