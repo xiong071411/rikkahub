@@ -44,6 +44,20 @@ class ChemicalStructureSpecTest {
     }
 
     @Test
+    fun `omits CIP annotations while keeping stereochemical bonds`() {
+        val spec = ChemicalStructureSpec.fromJson(
+            """{"version":1,"type":"molecule","smiles":"C[C@H](O)C(=O)O"}""",
+        )
+
+        val diagram = buildChemicalMoleculeDiagram(spec!!.reactants.single())
+        val labels = diagram.primitives.filterIsInstance<ChemicalDrawPrimitive.Text>().map { it.text }
+        val labelPrimitives = diagram.primitives.filterIsInstance<ChemicalDrawPrimitive.Text>()
+        assertTrue(labels.none { it in setOf("R", "S", "r", "s", "E", "Z", "P", "M") })
+        assertTrue(labelPrimitives.all { it.color == 0xFF000000.toInt() })
+        assertTrue(diagram.bonds.any { it.stereo == ChemicalBondStereo.UP || it.stereo == ChemicalBondStereo.DOWN })
+    }
+
+    @Test
     fun `parses simple reaction participants and conditions`() {
         val spec = ChemicalStructureSpec.fromJson(
             """{"version":1,"type":"reaction","reactants":[{"smiles":"CCBr"},{"smiles":"[OH-]"}],"products":[{"smiles":"CCO"},{"smiles":"[Br-]"}],"conditions":"NaOH"}""",

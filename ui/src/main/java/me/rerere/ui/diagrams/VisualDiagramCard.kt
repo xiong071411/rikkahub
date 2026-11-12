@@ -1,17 +1,10 @@
 package me.rerere.ui.diagrams
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -34,18 +27,11 @@ fun VisualDiagramCard(
     spec: VisualDiagramSpec,
     modifier: Modifier = Modifier,
 ) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            spec.title?.let { Text(it, style = MaterialTheme.typography.titleSmallEmphasized, maxLines = 2) }
-            BoxWithConstraints(Modifier.fillMaxWidth()) {
+    DiagramCardFrame(title = spec.title, modifier = modifier) { contentModifier, isFullScreen ->
+        if (isFullScreen) {
+            VisualDiagramCanvas(spec, contentModifier)
+        } else {
+            BoxWithConstraints(contentModifier) {
                 val diagramHeight = (maxWidth * (spec.height / spec.width)).coerceIn(160.dp, 360.dp)
                 VisualDiagramCanvas(spec, Modifier.fillMaxWidth().height(diagramHeight))
             }

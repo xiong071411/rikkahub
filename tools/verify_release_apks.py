@@ -71,6 +71,9 @@ def verify(root: Path, build_tools: Path, version_code: int, version_name: str, 
                         raise ValueError(f"缺少学习模式记忆代码：{source}: {marker.decode()}")
                 if not any(b"chemical-structure" in data for data in dex):
                     raise ValueError(f"缺少化学结构渲染代码：{source}")
+                for marker in (b"visual-diagram", "全屏查看图像".encode("utf-8"), b"Font size is in sp"):
+                    if not any(marker in data for data in dex):
+                        raise ValueError(f"缺少教学图兼容或放大代码：{source}: {marker.decode('utf-8')}")
                 dex_hashes[(flavor, abi)] = [hashlib.sha256(data).hexdigest() for data in dex]
             record = {
                 "source": source.as_posix(), "filename": filename, "flavor": flavor, "abi": abi,

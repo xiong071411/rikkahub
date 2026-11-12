@@ -9,11 +9,10 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -38,6 +37,7 @@ import kotlin.math.ceil
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.roundToInt
+import me.rerere.ui.diagrams.DiagramCardFrame
 
 private const val FUNCTION_PLOT_SAMPLE_COUNT = 513
 private val PI_LABEL_DENOMINATORS = listOf(1, 2, 3, 4, 6, 8, 12)
@@ -67,29 +67,20 @@ fun FunctionPlotCard(
 ) {
     val geometry = remember(spec) { spec.buildGeometry() }
     val colors = remember(spec.functions.size) { spec.functions.indices.map { ChartPalette[it % ChartPalette.size] } }
-    Surface(
-        modifier = modifier.fillMaxWidth(),
+    DiagramCardFrame(
+        title = spec.title,
+        modifier = modifier,
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            spec.title?.let { title ->
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMediumEmphasized,
-                    maxLines = 2,
-                )
-            }
+    ) { contentModifier, isFullScreen ->
+        Column(modifier = contentModifier) {
             FunctionPlotGraph(
                 geometry = geometry,
                 colors = colors,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(220.dp),
+                modifier = if (isFullScreen) {
+                    Modifier.weight(1f).fillMaxWidth()
+                } else {
+                    Modifier.fillMaxWidth().height(220.dp)
+                },
             )
             if (spec.functions.size > 1 || spec.functions.any { it.label != null }) {
                 FlowRow(

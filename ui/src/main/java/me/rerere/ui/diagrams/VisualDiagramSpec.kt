@@ -13,6 +13,8 @@ private const val MAX_SPEC_LENGTH = 16_384
 private const val MAX_ELEMENTS = 128
 private const val MAX_POINTS = 64
 private const val MAX_VIEW_SIZE = 1_000f
+private const val MIN_LABEL_FONT_SIZE = 12f
+private const val MAX_LABEL_FONT_SIZE = 32f
 
 @Immutable
 data class VisualDiagramPoint(val x: Float, val y: Float)
@@ -45,13 +47,17 @@ data class VisualDiagramSpec(
             val width = root.number("width") ?: error("Missing width")
             val height = root.number("height") ?: error("Missing height")
             require(width in 20f..MAX_VIEW_SIZE && height in 20f..MAX_VIEW_SIZE)
-            val elements = root["elements"] as? JsonArray ?: error("Missing elements")
-            require(elements.isNotEmpty() && elements.size <= MAX_ELEMENTS)
+            val sourceElements = root["elements"] as? JsonArray ?: error("Missing elements")
+            require(sourceElements.isNotEmpty() && sourceElements.size <= MAX_ELEMENTS)
+            val elements = sourceElements.mapNotNull { element ->
+                runCatching { parseElement(element, width, height) }.getOrNull()
+            }
+            require(elements.isNotEmpty())
             VisualDiagramSpec(
                 title = root.string("title")?.trim()?.take(120)?.takeIf(String::isNotEmpty),
                 width = width,
                 height = height,
-                elements = elements.map { parseElement(it, width, height) },
+                elements = elements,
             )
         }.getOrNull()
     }
@@ -183,12 +189,12 @@ private fun parseElement(element: JsonElement, width: Float, height: Float): Vis
             val text = obj.string("text")?.takeIf(String::isNotBlank) ?: error("Missing text")
             require(text.length <= 160)
             val fontSize = obj.number("fontSize") ?: 14f
-            require(fontSize in 8f..32f)
+            require(fontSize > 0f)
             VisualDiagramElement.Label(
                 point = point,
                 text = text,
                 color = color,
-                fontSize = fontSize,
+                fontSize = fontSize.coerceIn(MIN_LABEL_FONT_SIZE, MAX_LABEL_FONT_SIZE),
                 alignment = when (obj.string("align")) {
                     null, "center" -> VisualDiagramElement.Alignment.CENTER
                     "start" -> VisualDiagramElement.Alignment.START

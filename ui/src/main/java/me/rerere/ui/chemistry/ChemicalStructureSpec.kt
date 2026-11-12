@@ -185,6 +185,7 @@ internal fun buildChemicalMoleculeDiagram(spec: ChemicalMoleculeSpec): ChemicalM
     val molecule = StereoMolecule()
     SmilesParser().parse(molecule, spec.smiles.toByteArray(StandardCharsets.UTF_8), false, true)
     require(molecule.allAtoms in 1..MAX_ATOMS)
+    molecule.setMoleculeColor(Molecule.cMoleculeColorNeutral)
     molecule.ensureHelperArrays(Molecule.cHelperNeighbours)
     CoordinateInventor().apply { setRandomSeed(0L) }.invent(molecule)
 
@@ -227,7 +228,12 @@ internal fun buildChemicalMoleculeDiagram(spec: ChemicalMoleculeSpec): ChemicalM
     repeatRight?.let { require(molecule.getAllConnAtoms(it) == 1) }
 
     val context = ChemicalDepictContext()
-    val depictor = GenericDepictor(molecule, AbstractDepictor.cDModeNoImplicitAtomLabelColors)
+    val displayMode = AbstractDepictor.cDModeNoImplicitAtomLabelColors or
+        AbstractDepictor.cDModeSuppressCIPParity or
+        AbstractDepictor.cDModeSuppressESR or
+        AbstractDepictor.cDModeSuppressChiralText or
+        AbstractDepictor.cDModeNoColorOnESRAndCIP
+    val depictor = GenericDepictor(molecule, displayMode)
     depictor.setFactorTextSize(0.88)
     val marginLeft = if (repeatLeft == null) 16.0 else 40.0
     val marginRight = if (repeatRight == null) 16.0 else 40.0

@@ -4,18 +4,18 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.produceState
@@ -35,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import me.rerere.ui.diagrams.DiagramCardFrame
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -99,50 +100,44 @@ private fun ChemicalStructureCard(
     products: List<ChemicalMoleculeDiagram>,
     modifier: Modifier,
 ) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            spec.name?.let { name ->
-                Text(text = name, style = MaterialTheme.typography.titleSmallEmphasized, maxLines = 2)
-            }
-            if (spec.type == ChemicalStructureType.MOLECULE || spec.type == ChemicalStructureType.POLYMER) {
-                MoleculeItem(
-                    diagram = reactants.single(),
-                    modifier = Modifier.align(Alignment.CenterHorizontally),
-                    width = if (spec.type == ChemicalStructureType.POLYMER) 300f else 320f,
-                    repeatLabel = spec.repeatLabel,
-                )
-            } else {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    reactants.forEachIndexed { index, diagram ->
-                        if (index > 0) ReactionPlus()
-                        MoleculeItem(diagram, width = 200f)
-                    }
-                    ReactionArrow()
-                    products.forEachIndexed { index, diagram ->
-                        if (index > 0) ReactionPlus()
-                        MoleculeItem(diagram, width = 200f)
-                    }
-                }
-                spec.conditions?.let { conditions ->
-                    Text(
-                        text = conditions,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    DiagramCardFrame(title = spec.name, modifier = modifier) { contentModifier, isFullScreen ->
+        BoxWithConstraints(contentModifier) {
+            Column(
+                modifier = if (isFullScreen) Modifier.fillMaxSize() else Modifier,
+                verticalArrangement = if (isFullScreen) Arrangement.Center else Arrangement.spacedBy(8.dp),
+            ) {
+                if (spec.type == ChemicalStructureType.MOLECULE || spec.type == ChemicalStructureType.POLYMER) {
+                    MoleculeItem(
+                        diagram = reactants.single(),
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
+                        width = minOf(maxWidth.value, if (isFullScreen) 760f else 320f),
+                        repeatLabel = spec.repeatLabel,
                     )
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        reactants.forEachIndexed { index, diagram ->
+                            if (index > 0) ReactionPlus()
+                            MoleculeItem(diagram, width = if (isFullScreen) 320f else 200f)
+                        }
+                        ReactionArrow()
+                        products.forEachIndexed { index, diagram ->
+                            if (index > 0) ReactionPlus()
+                            MoleculeItem(diagram, width = if (isFullScreen) 320f else 200f)
+                        }
+                    }
+                    spec.conditions?.let { conditions ->
+                        Text(
+                            text = conditions,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }

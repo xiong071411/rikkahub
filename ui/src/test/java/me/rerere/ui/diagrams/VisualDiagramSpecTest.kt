@@ -18,6 +18,17 @@ class VisualDiagramSpecTest {
     }
 
     @Test
+    fun `normalizes small model text and keeps valid elements when one is malformed`() {
+        val spec = VisualDiagramSpec.fromJson(
+            """{"version":1,"width":100,"height":70,"elements":[{"type":"text","at":[10,10],"text":"N","fontSize":4.5},{"type":"rect","x":90,"y":60,"width":20,"height":20},{"type":"arrow","from":[20,50],"to":[20,20]}]}""",
+        )
+
+        assertNotNull(spec)
+        assertEquals(2, spec!!.elements.size)
+        assertEquals(12f, (spec.elements.first() as VisualDiagramElement.Label).fontSize)
+    }
+
+    @Test
     fun `rejects executable shapes invalid coordinates and too many elements`() {
         assertNull(VisualDiagramSpec.fromJson("""{"version":1,"width":100,"height":70,"elements":[{"type":"script","code":"alert(1)"}]}"""))
         assertNull(VisualDiagramSpec.fromJson("""{"version":1,"width":100,"height":70,"elements":[{"type":"line","from":[-1,4],"to":[2,3]}]}"""))
