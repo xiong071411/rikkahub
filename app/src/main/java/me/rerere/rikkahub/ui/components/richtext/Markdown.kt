@@ -57,7 +57,6 @@ import kotlinx.datetime.toLocalDateTime
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Copy01
 import me.rerere.hugeicons.stroke.Download04
-import me.rerere.bettertext.latex.LatexInline
 import me.rerere.bettertext.markdown.InlineDecoration
 import me.rerere.bettertext.markdown.MarkdownBlock
 import me.rerere.bettertext.markdown.MarkdownComponents
@@ -256,7 +255,7 @@ fun MarkdownBlock(
             table = { table -> TableCard(table) },
             details = MaterialMarkdownDefaults.components.details,
             inlineMath = if (enableLatexRendering) {
-                { formula -> LatexInline.cached(formula, context) }
+                { formula -> SafeLatexInline.cached(formula, context) }
             } else {
                 null
             },
