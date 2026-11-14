@@ -31,6 +31,10 @@ interface SyncCoverage {
     val issues: List<SyncCoverageIssue> get() = emptyList()
     suspend fun refreshAvailability() {}
     suspend fun snapshot(): Map<Pair<String, String>, String>
+    suspend fun snapshot(refreshWorkspaces: Boolean): Map<Pair<String, String>, String> = snapshot()
+    suspend fun snapshotFilesAndPrefs(): Map<Pair<String, String>, String>? = null
+    suspend fun snapshotEntity(type: String, id: String): String? = snapshot()[type to id]
+    suspend fun sshWorkspaceIds(): Set<String>? = null
     suspend fun apply(type: String, id: String, payload: String?)
     suspend fun materializeResources()
     suspend fun confirmLocal(type: String, id: String, payload: String?) {}
@@ -49,6 +53,7 @@ class SyncCoverageStore(
     private val sshPool: SshConnectionPool? = null,
     private val encrypt: (String) -> String = SecretCipher::encrypt,
     private val decrypt: (String) -> String = SecretCipher::decrypt,
+    private val fastCache: SyncLocalFastCache = SyncLocalFastCache(db),
 ) : SyncCoverage {
     private val dao = db.syncCoverageDao()
     private val json = JsonInstant
@@ -73,11 +78,171 @@ class SyncCoverageStore(
         }
     }
 
-    override suspend fun snapshot(): Map<Pair<String, String>, String> = buildMap {
-        refreshAvailability()
+    override suspend fun sshWorkspaceIds(): Set<String> =
+        db.workspaceDao().getAll().filter { it.isSsh() }.mapTo(HashSet()) { it.id }
+
+    override suspend fun snapshot(): Map<Pair<String, String>, String> = snapshot(refreshWorkspaces = true)
+
+    override suspend fun snapshot(refreshWorkspaces: Boolean): Map<Pair<String, String>, String> = buildMap {
+        if (refreshWorkspaces) {
+            refreshAvailability()
+        }
         putAll(workspacePayloads)
+        val allResources = dao.resources()
         // 会话可能因正在生成而延迟落地；先重试进度，未匹配的负载继续进入快照，不能误发删除。
-        dao.resources().filter { it.entityType == "memory_progress" && !it.deleted && it.materializedHash.isEmpty() }
+        retryPendingMemoryProgress(allResources)
+        dao.usage().forEach {
+            put(
+                "usage_record" to it.syncId,
+                withoutLocalId(json.encodeToJsonElement(it).jsonObject)
+            )
+        }
+        dao.translations().forEach { put("translation_history" to it.id, json.encodeToString(it)) }
+        dao.generatedMedia().forEach { entity ->
+            serializeGenMedia(entity)?.let { put("gen_media" to entity.syncId, it) }
+        }
+        dao.managedFiles().filter { ExtendedSyncTypes.isResourcePath(it.relativePath) }.forEach {
+            put("managed_file" to pathId(it.relativePath), withoutLocalId(json.encodeToJsonElement(it).jsonObject))
+        }
+        val progressList = dao.memoryProgress()
+        if (progressList.isNotEmpty()) {
+            val nodesByConv = loadNodesGroupedByConversation(progressList.map { it.conversationId })
+            progressList.forEach { progress ->
+                val ids = branchIdsFromNodes(nodesByConv[progress.conversationId].orEmpty())
+                put(
+                    "memory_progress" to progress.conversationId,
+                    json.encodeToString(
+                        MemoryProgressSyncPayload(
+                            progress.conversationId,
+                            progress.consolidatedAt,
+                            CanonicalSyncHash.sha256Hex(ids.joinToString("\n")),
+                            ids
+                        )
+                    )
+                )
+            }
+        }
+        collectPrefsAndFileResources(this, allResources)
+    }
+
+    override suspend fun snapshotFilesAndPrefs(): Map<Pair<String, String>, String> = buildMap {
+        val allResources = dao.resources()
+        retryPendingMemoryProgress(allResources)
+        collectPrefsAndFileResources(this, allResources)
+    }
+
+    override suspend fun snapshotEntity(type: String, id: String): String? {
+        if (type !in ExtendedSyncTypes.all) return null
+        return when (type) {
+            "workspace" -> {
+                if (id in workspaceIssues) return null
+                workspacePayloads[type to id]?.let { return it }
+                val entity = db.workspaceDao().getById(id) ?: return null
+                try {
+                    json.encodeToString(WorkspaceSyncPayload.fromEntity(entity, decrypt)).also {
+                        workspacePayloads[type to id] = it
+                    }
+                } catch (error: WorkspaceCredentialUnavailable) {
+                    workspaceIssues[entity.id] = SyncCoverageIssue("workspace", entity.id, error.message.orEmpty())
+                    null
+                }
+            }
+            "usage_record" -> dao.usageById(id)?.let { withoutLocalId(json.encodeToJsonElement(it).jsonObject) }
+            "translation_history" -> dao.translationById(id)?.let { json.encodeToString(it) }
+            "gen_media" -> dao.generatedMediaById(id)?.let { serializeGenMedia(it) }
+            "managed_file" -> dao.managedFiles().firstOrNull {
+                ExtendedSyncTypes.isResourcePath(it.relativePath) && pathId(it.relativePath) == id
+            }?.let { withoutLocalId(json.encodeToJsonElement(it).jsonObject) }
+            "memory_progress" -> {
+                val pending = dao.resource("memory_progress", id)
+                if (pending != null && !pending.deleted && pending.materializedHash.isEmpty()) {
+                    if (applyMemoryProgress(json.decodeFromString(pending.payload))) {
+                        dao.putResource(
+                            pending.copy(
+                                materializedHash = CanonicalSyncHash.computeSemanticHash("memory_progress", pending.payload)
+                            )
+                        )
+                    } else {
+                        return pending.payload
+                    }
+                }
+                val consolidatedAt = db.memoryConsolidationDao().getConsolidatedAt(id) ?: return null
+                val ids = branchIds(id)
+                json.encodeToString(
+                    MemoryProgressSyncPayload(
+                        id,
+                        consolidatedAt,
+                        CanonicalSyncHash.sha256Hex(ids.joinToString("\n")),
+                        ids
+                    )
+                )
+            }
+            "ui_preference" -> {
+                val kind = ExtendedSyncTypes.sharedPreferenceKeys[id] ?: return null
+                if (!preferences.contains(id)) return null
+                val value = if (kind == "boolean") {
+                    JsonPrimitive(preferences.getBoolean(id, false))
+                } else {
+                    JsonPrimitive(preferences.getString(id, "").orEmpty())
+                }
+                JsonObject(mapOf("value" to value)).toString()
+            }
+            "skill_bundle" -> {
+                val pending = dao.resource(type, id)
+                if (pending != null && !pending.deleted && pending.materializedHash.isEmpty()) {
+                    return pending.payload
+                }
+                val skills = File(filesDir, "skills")
+                val dir = skills.listFiles()?.firstOrNull {
+                    it.isDirectory && !it.name.startsWith('.') &&
+                        !Files.isSymbolicLink(it.toPath()) && pathId(it.name) == id
+                } ?: return null
+                if (!File(dir, "SKILL.md").isFile) return null
+                val diskCache = fastCache.getAllFileCache()
+                val newCacheWrites = ArrayList<SyncLocalFastCache.CachedFileEntry>()
+                val files = regularFiles(dir).map {
+                    blob(it, it.relativeTo(dir).invariantSeparatorsPath, diskCache, newCacheWrites)
+                }
+                fastCache.upsertFileCacheBatch(newCacheWrites)
+                val bundle = SkillBundleSyncPayload(dir.name, files).validate()
+                json.encodeToString(bundle)
+            }
+            "file_asset" -> {
+                val pending = dao.resource(type, id)
+                if (pending != null && !pending.deleted && pending.materializedHash.isEmpty()) {
+                    return pending.payload
+                }
+                val diskCache = fastCache.getAllFileCache()
+                val cachedMatch = diskCache.keys.firstOrNull { path ->
+                    ExtendedSyncTypes.isResourcePath(path) && pathId(path) == id
+                }?.let { File(filesDir, it) }?.takeIf { it.isFile && !Files.isSymbolicLink(it.toPath()) }
+                val targetFile = cachedMatch ?: ExtendedSyncTypes.resourceRoots.asSequence()
+                    .map { File(filesDir, it) }
+                    .filter { it.isDirectory }
+                    .flatMap { regularFiles(it).asSequence() }
+                    .firstOrNull { file ->
+                        val relative = file.relativeTo(filesDir).invariantSeparatorsPath
+                        pathId(relative) == id
+                    } ?: return null
+                val relative = targetFile.relativeTo(filesDir).invariantSeparatorsPath
+                val newCacheWrites = ArrayList<SyncLocalFastCache.CachedFileEntry>()
+                val asset = blob(targetFile, relative, diskCache, newCacheWrites).validate()
+                fastCache.upsertFileCacheBatch(newCacheWrites)
+                val raw = json.encodeToString(asset)
+                if (pending?.deleted == true &&
+                    CanonicalSyncHash.computeSemanticHash("file_asset", pending.payload) ==
+                    CanonicalSyncHash.computeSemanticHash("file_asset", raw)) {
+                    null
+                } else {
+                    raw
+                }
+            }
+            else -> null
+        }
+    }
+
+    private suspend fun retryPendingMemoryProgress(allResources: List<SyncResourceEntity>) {
+        allResources.filter { it.entityType == "memory_progress" && !it.deleted && it.materializedHash.isEmpty() }
             .forEach { pending ->
                 if (applyMemoryProgress(json.decodeFromString(pending.payload))) {
                     dao.putResource(
@@ -87,59 +252,40 @@ class SyncCoverageStore(
                     )
                 }
             }
-        dao.usage().forEach {
-            put(
-                "usage_record" to it.syncId,
-                withoutLocalId(json.encodeToJsonElement(it).jsonObject)
-            )
-        }
-        dao.translations().forEach { put("translation_history" to it.id, json.encodeToString(it)) }
-        dao.generatedMedia().forEach {
-            val portable = it.copy(
-                path = AttachmentPathNormalizer.normalizeAttachmentUrl(it.path, filesDir),
-                sourcePaths = it.sourcePaths?.lines()?.joinToString("\n") { path ->
-                    AttachmentPathNormalizer.normalizeAttachmentUrl(path, filesDir)
-                }
-            )
-            if (!ExtendedSyncTypes.isResourcePath(portable.path)) return@forEach
-            put(
-                "gen_media" to it.syncId,
-                withoutLocalId(json.encodeToJsonElement(portable).jsonObject)
-            )
-        }
-        dao.managedFiles().filter { ExtendedSyncTypes.isResourcePath(it.relativePath) }.forEach {
-            put("managed_file" to pathId(it.relativePath), withoutLocalId(json.encodeToJsonElement(it).jsonObject))
-        }
-        dao.memoryProgress().forEach {
-            val ids = branchIds(it.conversationId)
-            put(
-                "memory_progress" to it.conversationId,
-                json.encodeToString(
-                    MemoryProgressSyncPayload(
-                        it.conversationId,
-                        it.consolidatedAt,
-                        CanonicalSyncHash.sha256Hex(ids.joinToString("\n")),
-                        ids
-                    )
-                )
-            )
-        }
+    }
+
+    private fun serializeGenMedia(entity: GenMediaEntity): String? {
+        val portable = entity.copy(
+            path = AttachmentPathNormalizer.normalizeAttachmentUrl(entity.path, filesDir),
+            sourcePaths = entity.sourcePaths?.lines()?.joinToString("\n") { path ->
+                AttachmentPathNormalizer.normalizeAttachmentUrl(path, filesDir)
+            }
+        )
+        if (!ExtendedSyncTypes.isResourcePath(portable.path)) return null
+        return withoutLocalId(json.encodeToJsonElement(portable).jsonObject)
+    }
+
+    private fun collectPrefsAndFileResources(
+        target: MutableMap<Pair<String, String>, String>,
+        allResources: List<SyncResourceEntity>,
+    ) {
         ExtendedSyncTypes.sharedPreferenceKeys.forEach { (key, kind) ->
             if (preferences.contains(key)) {
-                val value = if (kind ==
-                    "boolean") {
+                val value = if (kind == "boolean") {
                     JsonPrimitive(preferences.getBoolean(key, false))
                 } else {
                     JsonPrimitive(preferences.getString(key, "").orEmpty())
                 }
-                put("ui_preference" to key, JsonObject(mapOf("value" to value)).toString())
+                target["ui_preference" to key] = JsonObject(mapOf("value" to value)).toString()
             }
         }
-        val resources = dao.resources().associateBy { it.entityType to it.entityId }
+        val resources = allResources.associateBy { it.entityType to it.entityId }
         // 未安装完的资源仍属于用户数据。删除墓碑则压制相同旧文件，防止另一端清理后重新上传复活。
         resources.values.filter { !it.deleted && it.materializedHash.isEmpty() }.forEach {
-            put(it.entityType to it.entityId, it.payload)
+            target[it.entityType to it.entityId] = it.payload
         }
+        val diskCache = fastCache.getAllFileCache()
+        val newCacheWrites = ArrayList<SyncLocalFastCache.CachedFileEntry>()
         val skills = File(filesDir, "skills")
         skills.listFiles()?.filter {
             it.isDirectory && !it.name.startsWith(
@@ -149,9 +295,11 @@ class SyncCoverageStore(
             if (!File(dir, "SKILL.md").isFile) return@forEach
             val pending = resources["skill_bundle" to pathId(dir.name)]
             if (pending != null && !pending.deleted && pending.materializedHash.isEmpty()) return@forEach
-            val files = regularFiles(dir).map { blob(it, it.relativeTo(dir).invariantSeparatorsPath) }
+            val files = regularFiles(dir).map {
+                blob(it, it.relativeTo(dir).invariantSeparatorsPath, diskCache, newCacheWrites)
+            }
             val bundle = SkillBundleSyncPayload(dir.name, files).validate()
-            put("skill_bundle" to pathId(dir.name), json.encodeToString(bundle))
+            target["skill_bundle" to pathId(dir.name)] = json.encodeToString(bundle)
         }
         for (name in ExtendedSyncTypes.resourceRoots) {
             val root = File(filesDir, name)
@@ -160,26 +308,43 @@ class SyncCoverageStore(
                 val relative = file.relativeTo(filesDir).invariantSeparatorsPath
                 val pending = resources["file_asset" to pathId(relative)]
                 if (pending != null && !pending.deleted && pending.materializedHash.isEmpty()) return@forEach
-                val asset = blob(file, relative).validate()
+                val asset = blob(file, relative, diskCache, newCacheWrites).validate()
                 val key = "file_asset" to pathId(relative)
                 val raw = json.encodeToString(asset)
                 val prior = resources[key]
                 if (prior?.deleted != true ||
                     CanonicalSyncHash.computeSemanticHash("file_asset", prior.payload) !=
                     CanonicalSyncHash.computeSemanticHash("file_asset", raw)) {
-                    put(key, raw)
+                    target[key] = raw
                 }
             }
         }
+        fastCache.upsertFileCacheBatch(newCacheWrites)
     }
 
     private fun withoutLocalId(value: JsonObject) = JsonObject(value - "id").toString()
 
-    private suspend fun branchIds(conversationId: String): List<String> {
-        return db.messageNodeDao().getNodesOfConversation(conversationId).sortedBy { it.nodeIndex }.map { node ->
-            val messages = json.decodeFromString<List<UIMessage>>(node.messages)
-            "${node.id}:${messages.getOrNull(node.selectIndex)?.id}"
+    private suspend fun loadNodesGroupedByConversation(
+        conversationIds: List<String>,
+    ): Map<String, List<me.rerere.rikkahub.data.db.entity.MessageNodeEntity>> {
+        val grouped = HashMap<String, MutableList<me.rerere.rikkahub.data.db.entity.MessageNodeEntity>>()
+        conversationIds.chunked(500).forEach { chunk ->
+            dao.messageNodesForConversations(chunk).forEach { node ->
+                grouped.getOrPut(node.conversationId) { ArrayList() }.add(node)
+            }
         }
+        return grouped
+    }
+
+    private fun branchIdsFromNodes(
+        nodes: List<me.rerere.rikkahub.data.db.entity.MessageNodeEntity>,
+    ): List<String> = nodes.sortedBy { it.nodeIndex }.map { node ->
+        val messages = json.decodeFromString<List<UIMessage>>(node.messages)
+        "${node.id}:${messages.getOrNull(node.selectIndex)?.id}"
+    }
+
+    private suspend fun branchIds(conversationId: String): List<String> {
+        return branchIdsFromNodes(db.messageNodeDao().getNodesOfConversation(conversationId))
     }
 
     private fun regularFiles(root: File): List<File> = root.walkTopDown()
@@ -190,10 +355,18 @@ class SyncCoverageStore(
         }
         .sortedBy { it.relativeTo(root).invariantSeparatorsPath }.toList()
 
-    private fun blob(source: File, relativePath: String): SyncBlobFile {
-        val key = source.absolutePath
-        fingerprints[key]?.let { cached ->
-            if (cached.length == source.length() && cached.modified == source.lastModified() &&
+    private fun blob(
+        source: File,
+        relativePath: String,
+        diskCache: Map<String, SyncLocalFastCache.CachedFileEntry>? = null,
+        pendingCacheWrites: MutableList<SyncLocalFastCache.CachedFileEntry>? = null,
+    ): SyncBlobFile {
+        val cacheKey = runCatching { source.relativeTo(filesDir).invariantSeparatorsPath }
+            .getOrDefault(source.absolutePath)
+        val sourceLength = source.length()
+        val sourceModified = source.lastModified()
+        fingerprints[cacheKey]?.let { cached ->
+            if (cached.length == sourceLength && cached.modified == sourceModified &&
                 File(filesDir, cached.file.blobPath).let {
                     it.isFile && it.length() == cached.length &&
                         it.lastModified() == cached.blobModified
@@ -201,21 +374,63 @@ class SyncCoverageStore(
                 return cached.file.copy(path = relativePath)
             }
         }
+        val persisted = diskCache?.get(cacheKey) ?: fastCache.getFileCache(cacheKey)
+        if (persisted != null && persisted.blobPath.isNotEmpty() &&
+            persisted.size == sourceLength && persisted.modified == sourceModified) {
+            val blobFile = File(filesDir, persisted.blobPath)
+            if (blobFile.isFile && blobFile.length() == sourceLength &&
+                blobFile.lastModified() == persisted.blobModified) {
+                val result = SyncBlobFile(relativePath, persisted.blobPath, persisted.sha256, sourceLength)
+                fingerprints[cacheKey] = Fingerprint(sourceLength, sourceModified, persisted.blobModified, result)
+                return result
+            }
+        }
         val dir = File(filesDir, "sync_blobs").apply { mkdirs() }
         val temporary = File(dir, ".sync_${Uuid.random()}.tmp")
-        val length = source.length()
-        val modified = source.lastModified()
         try {
             source.inputStream().use { input -> temporary.outputStream().use { input.copyTo(it) } }
-            check(length == source.length() && modified == source.lastModified()) { "文件正在修改，请稍后重试同步" }
+            check(sourceLength == source.length() && sourceModified == source.lastModified()) { "文件正在修改，请稍后重试同步" }
             val sha = CanonicalSyncHash.sha256File(temporary)
             val destination = File(dir, sha)
+            val blobRel = "sync_blobs/$sha"
+            val destCached = diskCache?.get(blobRel) ?: fastCache.getFileCache(blobRel)
+            val destValidFromCache = destCached != null && destination.isFile &&
+                destination.length() == destCached.size &&
+                destination.lastModified() == destCached.modified &&
+                destCached.sha256 == sha
             if (!destination.isFile || destination.length() != temporary.length() ||
-                CanonicalSyncHash.sha256File(destination) != sha) {
+                (!destValidFromCache && CanonicalSyncHash.sha256File(destination) != sha)) {
                 Files.move(temporary.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
-            val result = SyncBlobFile(relativePath, "sync_blobs/$sha", sha, length)
-            fingerprints[key] = Fingerprint(length, modified, destination.lastModified(), result)
+            val destModified = destination.lastModified()
+            val result = SyncBlobFile(relativePath, blobRel, sha, sourceLength)
+            fingerprints[cacheKey] = Fingerprint(sourceLength, sourceModified, destModified, result)
+            val sourceCacheEntry = SyncLocalFastCache.CachedFileEntry(
+                path = cacheKey,
+                size = sourceLength,
+                modified = sourceModified,
+                sha256 = sha,
+                blobPath = blobRel,
+                blobModified = destModified,
+                verifiedServerId = if (persisted?.verifiedSha256 == sha) persisted.verifiedServerId else "",
+                verifiedSha256 = if (persisted?.verifiedSha256 == sha) persisted.verifiedSha256 else "",
+                verifiedSize = if (persisted?.verifiedSha256 == sha) persisted.verifiedSize else 0L,
+            )
+            val blobCacheEntry = SyncLocalFastCache.CachedFileEntry(
+                path = blobRel,
+                size = sourceLength,
+                modified = destModified,
+                sha256 = sha,
+                verifiedServerId = if (destCached?.verifiedSha256 == sha) destCached.verifiedServerId else "",
+                verifiedSha256 = if (destCached?.verifiedSha256 == sha) destCached.verifiedSha256 else "",
+                verifiedSize = if (destCached?.verifiedSha256 == sha) destCached.verifiedSize else 0L,
+            )
+            if (pendingCacheWrites != null) {
+                pendingCacheWrites.add(sourceCacheEntry)
+                pendingCacheWrites.add(blobCacheEntry)
+            } else {
+                fastCache.upsertFileCacheBatch(listOf(sourceCacheEntry, blobCacheEntry))
+            }
             return result
         } finally {
             temporary.delete()
@@ -486,7 +701,25 @@ class SyncCoverageStore(
 
     private fun verifiedBlob(file: SyncBlobFile): Boolean {
         val blob = File(filesDir, file.blobPath)
-        return blob.isFile && blob.length() == file.size && CanonicalSyncHash.sha256File(blob) == file.sha256
+        if (!blob.isFile || blob.length() != file.size) return false
+        val modified = blob.lastModified()
+        val cached = fastCache.getFileCache(file.blobPath)
+        if (cached != null && cached.size == file.size && cached.modified == modified && cached.sha256 == file.sha256) {
+            return true
+        }
+        if (CanonicalSyncHash.sha256File(blob) != file.sha256) return false
+        fastCache.upsertFileCache(
+            SyncLocalFastCache.CachedFileEntry(
+                path = file.blobPath,
+                size = file.size,
+                modified = modified,
+                sha256 = file.sha256,
+                verifiedServerId = if (cached?.verifiedSha256 == file.sha256) cached.verifiedServerId else "",
+                verifiedSha256 = if (cached?.verifiedSha256 == file.sha256) cached.verifiedSha256 else "",
+                verifiedSize = if (cached?.verifiedSha256 == file.sha256) cached.verifiedSize else 0L,
+            )
+        )
+        return true
     }
 
     private fun confined(path: String): File {

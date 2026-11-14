@@ -1016,6 +1016,7 @@ private class FakeFavoriteDao : FavoriteDAO {
     }
     override fun listAll(): Flow<List<FavoriteEntity>> = MutableStateFlow(emptyList())
     override suspend fun getAllFavorites(): List<FavoriteEntity> = map.values.toList()
+    override suspend fun getById(id: String): FavoriteEntity? = map[id]
     override fun listByType(type: String): Flow<List<FavoriteEntity>> = MutableStateFlow(emptyList())
     override suspend fun getRefKeysByType(type: String): List<String> = emptyList()
     override suspend fun getFavoriteNodeIdsOfConversation(conversationId: String): List<String> = emptyList()

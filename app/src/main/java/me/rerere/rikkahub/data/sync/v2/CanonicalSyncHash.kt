@@ -316,6 +316,25 @@ object CanonicalSyncHash {
     }
 
     /**
+     * 单次解析 JSON 并同时产出规范化负载与语义哈希，避免同步检查与入队阶段重复反序列化。
+     */
+    fun normalizeAndComputeHash(
+        entityType: String,
+        payloadJson: String,
+        filesDir: File? = null,
+    ): Pair<String, String> {
+        if (payloadJson.isBlank()) {
+            return "" to sha256Hex("$entityType:__deleted__")
+        }
+        val parsed = runCatching { parser.parseToJsonElement(payloadJson) }.getOrNull()
+            ?: return payloadJson to sha256Hex(payloadJson.trim())
+        val normalized = normalizeParsedEntity(entityType, parsed, filesDir)
+        val normalizedStr = serializeCompactJsonPreservingOrder(normalized)
+        val compactSorted = buildCanonicalSortedJson(entityType, normalized, isRoot = true)
+        return normalizedStr to sha256Hex(compactSorted)
+    }
+
+    /**
      * 计算与服务端 Python `compute_semantic_hash(entity_type, payload_json)` 逐字节一致的 SHA-256 十六进制字符串。
      */
     fun computeSemanticHash(entityType: String, payloadJson: String, filesDir: File? = null): String {

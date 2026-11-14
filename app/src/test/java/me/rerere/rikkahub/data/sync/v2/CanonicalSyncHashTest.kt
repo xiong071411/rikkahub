@@ -246,4 +246,39 @@ class CanonicalSyncHashTest {
         assertEquals(legacyHash, falseHash)
         assertNotEquals(legacyHash, trueHash)
     }
+
+    @Test
+    fun `normalizeAndComputeHash matches separate normalizeEntityPayload and computeSemanticHash`() {
+        val raw = """
+            {
+              "id": "conv-pair-1",
+              "assistantId": "00000000-0000-0000-0000-000000000000",
+              "title": "单次解析一致性测试",
+              "createAt": 1700000000120,
+              "updateAt": 1700000999999,
+              "config": { "mcpServerIds": ["srv-1"], "reasoningLevel": "DEFAULT" },
+              "messageNodes": [
+                {
+                  "id": "n1",
+                  "selectIndex": 0,
+                  "messages": [
+                    {
+                      "id": "m1",
+                      "role": "USER",
+                      "parts": [
+                        { "type": "image", "url": "/api/files/path/upload/a.png" }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+        val expectedNorm = CanonicalSyncHash.normalizeEntityPayload("conversation", raw)
+        val expectedHash = CanonicalSyncHash.computeSemanticHash("conversation", expectedNorm)
+        val (actualNorm, actualHash) = CanonicalSyncHash.normalizeAndComputeHash("conversation", raw)
+        assertEquals(expectedNorm, actualNorm)
+        assertEquals(expectedHash, actualHash)
+        assertEquals("" to CanonicalSyncHash.computeSemanticHash("conversation", ""), CanonicalSyncHash.normalizeAndComputeHash("conversation", ""))
+    }
 }

@@ -61,8 +61,21 @@ class SyncMutationRecorder(
     ) {
         if (isApplyingRemoteSync()) return
         val filesDir = filesDirProvider()
-        val normPayload = CanonicalSyncHash.normalizeEntityPayload(entityType, rawPayloadJson, filesDir)
-        val contentHash = CanonicalSyncHash.computeSemanticHash(entityType, normPayload, filesDir)
+        val (normPayload, contentHash) = CanonicalSyncHash.normalizeAndComputeHash(
+            entityType,
+            rawPayloadJson,
+            filesDir,
+        )
+        recordNormalizedUpsert(entityType, entityId, normPayload, contentHash)
+    }
+
+    suspend fun recordNormalizedUpsert(
+        entityType: String,
+        entityId: String,
+        normPayload: String,
+        contentHash: String,
+    ) {
+        if (isApplyingRemoteSync()) return
         val now = System.currentTimeMillis()
 
         runInTransaction {

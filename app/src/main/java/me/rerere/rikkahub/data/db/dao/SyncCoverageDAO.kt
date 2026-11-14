@@ -6,6 +6,7 @@ import androidx.room.Upsert
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.ManagedFileEntity
 import me.rerere.rikkahub.data.db.entity.MemoryConsolidationEntity
+import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.db.entity.SyncResourceEntity
 import me.rerere.rikkahub.data.db.entity.TranslationHistoryEntity
 import me.rerere.rikkahub.data.db.entity.UsageRecordEntity
@@ -26,6 +27,9 @@ interface SyncCoverageDAO {
 
     @Query("SELECT * FROM translation_history ORDER BY create_at, id")
     suspend fun translations(): List<TranslationHistoryEntity>
+
+    @Query("SELECT * FROM translation_history WHERE id = :id LIMIT 1")
+    suspend fun translationById(id: String): TranslationHistoryEntity?
 
     @Upsert
     suspend fun upsertTranslation(value: TranslationHistoryEntity)
@@ -50,6 +54,9 @@ interface SyncCoverageDAO {
 
     @Query("SELECT * FROM memory_consolidation ORDER BY conversation_id")
     suspend fun memoryProgress(): List<MemoryConsolidationEntity>
+
+    @Query("SELECT * FROM message_node WHERE conversation_id IN (:conversationIds) ORDER BY conversation_id, node_index ASC")
+    suspend fun messageNodesForConversations(conversationIds: List<String>): List<MessageNodeEntity>
 
     @Query("DELETE FROM memory_consolidation WHERE conversation_id = :id")
     suspend fun deleteMemoryProgress(id: String)

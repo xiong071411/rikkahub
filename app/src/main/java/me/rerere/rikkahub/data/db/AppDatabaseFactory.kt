@@ -37,6 +37,7 @@ internal object AppDatabaseFactory {
                     File(context.filesDir, "simple_dict").takeIf { it.exists() }?.deleteRecursively()
                     createMessageFtsTables(db)
                     me.rerere.rikkahub.data.sync.engine.SyncTombstoneManager.createTables(db)
+                    me.rerere.rikkahub.data.sync.v2.SyncLocalFastCache.createTablesAndTriggers(db)
                 }
             })
             .openHelperFactory(SQLiteConfiguration.openHelperFactory(context))

@@ -18,6 +18,9 @@ interface FavoriteDAO {
     @Query("SELECT * FROM favorites")
     suspend fun getAllFavorites(): List<FavoriteEntity>
 
+    @Query("SELECT * FROM favorites WHERE id = :id LIMIT 1")
+    suspend fun getById(id: String): FavoriteEntity?
+
     @Query("SELECT * FROM favorites WHERE type = :type ORDER BY created_at DESC")
     fun listByType(type: String): Flow<List<FavoriteEntity>>
 

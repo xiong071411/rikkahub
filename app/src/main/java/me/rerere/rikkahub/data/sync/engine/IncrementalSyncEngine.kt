@@ -25,6 +25,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.encodeToJsonElement
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.asr.ASRProviderSetting
 import me.rerere.mediagen.provider.MediaGenerationProviderSetting
@@ -70,6 +71,7 @@ import me.rerere.rikkahub.data.sync.v2.MemorySyncPayload
 import me.rerere.rikkahub.data.sync.v2.RemoteSyncApplyContext
 import me.rerere.rikkahub.data.sync.v2.SyncCoverage
 import me.rerere.rikkahub.data.sync.v2.SyncCoverageStore
+import me.rerere.rikkahub.data.sync.v2.SyncLocalFastCache
 import me.rerere.rikkahub.data.sync.v2.SyncMutationRecorder
 import me.rerere.rikkahub.data.sync.v2.SyncSettingsContract
 import me.rerere.rikkahub.service.ChatService
@@ -98,6 +100,8 @@ private const val META_CURSOR = "cursor"
 private const val META_CLIENT_DEVICE_ID = "client_device_id"
 private const val META_V2_RECONCILED = "v2_reconciled"
 private const val META_COVERAGE = "sync_coverage_version"
+private const val META_DIRTY_TRACKER_SEEDED = "dirty_tracker_v1"
+private const val META_ATTACHMENT_BASELINE_SCANNED = "attachment_baseline_scanned"
 
 private const val PULL_PAGE_LIMIT = 200
 private const val PUSH_BATCH_LIMIT = 150
@@ -395,6 +399,7 @@ class IncrementalSyncEngine(
 
     private val syncMutex = Mutex()
     private val backgroundJobLock = Any()
+    private val fastCache = SyncLocalFastCache(database)
 
     @Volatile
     private var activeBackgroundJob: Deferred<Result<SyncSummary>>? = null
@@ -634,7 +639,10 @@ class IncrementalSyncEngine(
                             syncV2Dao.upsertMeta(SyncMetaEntity(META_SERVER_ID, serverInfo.server_id))
                             syncV2Dao.upsertMeta(SyncMetaEntity(META_CURSOR, "0"))
                             syncV2Dao.upsertMeta(SyncMetaEntity(META_V2_RECONCILED, "0"))
+                            syncV2Dao.upsertMeta(SyncMetaEntity(META_DIRTY_TRACKER_SEEDED, "0"))
+                            syncV2Dao.upsertMeta(SyncMetaEntity(META_ATTACHMENT_BASELINE_SCANNED, "0"))
                         }
+                        fastCache.clearServerVerifications()
                         cursor = 0L
                         isReconciled = false
                     } else if (storedServerId.isNullOrBlank()) {
@@ -645,6 +653,7 @@ class IncrementalSyncEngine(
                     if (syncV2Dao.getMetaValue(META_COVERAGE) != SyncSettingsContract.COVERAGE_VERSION) {
                         cursor = 0L
                         isReconciled = false
+                        syncV2Dao.upsertMeta(SyncMetaEntity(META_ATTACHMENT_BASELINE_SCANNED, "0"))
                         // 197 会确认自己不认识的记忆实体却不保存正文。仅重置游标仍会因哈希相同跳过应用，
                         // 随后的删除扫描还可能误删云端记忆；保留修订和待推队列，仅废弃这些未落地实体的哈希。
                         syncV2Dao.getEntityStatesByType("memory_file").forEach { state ->
@@ -654,6 +663,7 @@ class IncrementalSyncEngine(
 
                     reportProgress("正在检查工作区凭据...")
                     coverage?.refreshAvailability()
+                    val sshWorkspaceIds = resolveSshWorkspaceIds()
                     // Step 0a: 重试暂存变更；重新可读的工作区可能需要先保护本地差异。
                     val conflictsBeforeDrain = syncV2Dao.getUnresolvedConflicts().size
                     drainReadyInboxPending()
@@ -663,6 +673,7 @@ class IncrementalSyncEngine(
                     var syncedProvidersCount = 0
                     var conflictsCount = (syncV2Dao.getUnresolvedConflicts().size - conflictsBeforeDrain).coerceAtLeast(0)
                     val referencedRemoteFiles = LinkedHashSet<String>()
+                    var scannedAllLocalInThisRun = false
 
                     if (!isReconciled || cursor == 0L) {
                         // ---- 首次 V2 基线对账模式（兼容 V1 老用户无损平滑升级与新设备首次全量拉取） ----
@@ -674,6 +685,7 @@ class IncrementalSyncEngine(
                             deviceName = clientDeviceName,
                             serverId = serverInfo.server_id,
                             targetRevision = serverInfo.current_revision,
+                            sshWorkspaceIds = sshWorkspaceIds,
                             onProgress = reportProgress,
                         )
                         pulledConvCount += reconcileStats.pulledConversations
@@ -682,15 +694,41 @@ class IncrementalSyncEngine(
                         conflictsCount += reconcileStats.conflicts
                         referencedRemoteFiles.addAll(reconcileStats.referencedFiles)
                         cursor = reconcileStats.newCursor
+                        scannedAllLocalInThisRun = true
 
                         // 对账完成后，扫描本地独有的实体（如服务端尚不存在的新会话、生图节点与生图记录）入队待推
                         reportProgress("正在扫描本地独有对话与创作记录...")
-                        enqueueLocalDiffIntoOutbox(includeRoomEntities = true)
+                        val dirtyTrackerReady = fastCache.isSupported &&
+                            syncV2Dao.getMetaValue(META_DIRTY_TRACKER_SEEDED) == "1"
+                        val diffOutcome = enqueueLocalDiffIntoOutbox(
+                            includeRoomEntities = true,
+                            useFastDirtyPath = dirtyTrackerReady,
+                            refreshWorkspaces = false,
+                            sshWorkspaceIds = sshWorkspaceIds,
+                        )
+                        referencedRemoteFiles.addAll(diffOutcome.referencedFiles)
+                        if (fastCache.isSupported && !dirtyTrackerReady) {
+                            syncV2Dao.upsertMeta(SyncMetaEntity(META_DIRTY_TRACKER_SEEDED, "1"))
+                        }
                     } else {
                         // ---- 常规 Sync V2 增量同步模式 ----
-                        // Step 0b: 在拉取前先把 Settings 修改/删除及任何未入队的本地修改固化进 sync_outbox，保留各自的旧 baseRevision
+                        // Step 0b: 在拉取前先把本地变更固化进 sync_outbox，保留各自的旧 baseRevision
                         reportProgress("正在检查本地未同步变更...")
-                        enqueueLocalDiffIntoOutbox(includeRoomEntities = true)
+                        val dirtyTrackerReady = fastCache.isSupported &&
+                            syncV2Dao.getMetaValue(META_DIRTY_TRACKER_SEEDED) == "1"
+                        val diffOutcome = enqueueLocalDiffIntoOutbox(
+                            includeRoomEntities = true,
+                            useFastDirtyPath = dirtyTrackerReady,
+                            refreshWorkspaces = false,
+                            sshWorkspaceIds = sshWorkspaceIds,
+                        )
+                        referencedRemoteFiles.addAll(diffOutcome.referencedFiles)
+                        if (diffOutcome.scannedFullSnapshot) {
+                            scannedAllLocalInThisRun = true
+                        }
+                        if (fastCache.isSupported && !dirtyTrackerReady) {
+                            syncV2Dao.upsertMeta(SyncMetaEntity(META_DIRTY_TRACKER_SEEDED, "1"))
+                        }
 
                         // Step 1: 锁定 upper_bound_revision 分页拉取云端增量
                         if (serverInfo.current_revision > cursor) {
@@ -715,6 +753,7 @@ class IncrementalSyncEngine(
                                     deviceName = clientDeviceName,
                                     serverId = serverInfo.server_id,
                                     targetRevision = serverInfo.current_revision,
+                                    sshWorkspaceIds = sshWorkspaceIds,
                                     onProgress = reportProgress,
                                 )
                                 pulledConvCount += rec.pulledConversations
@@ -723,7 +762,14 @@ class IncrementalSyncEngine(
                                 conflictsCount += rec.conflicts
                                 referencedRemoteFiles.addAll(rec.referencedFiles)
                                 cursor = rec.newCursor
-                                enqueueLocalDiffIntoOutbox(includeRoomEntities = true)
+                                scannedAllLocalInThisRun = true
+                                val resetDiff = enqueueLocalDiffIntoOutbox(
+                                    includeRoomEntities = true,
+                                    useFastDirtyPath = false,
+                                    refreshWorkspaces = false,
+                                    sshWorkspaceIds = sshWorkspaceIds,
+                                )
+                                referencedRemoteFiles.addAll(resetDiff.referencedFiles)
                             } else {
                                 pulledConvCount += pullStats.pulledConversations
                                 syncedAssistantsCount += pullStats.syncedAssistants
@@ -784,14 +830,18 @@ class IncrementalSyncEngine(
 
                     // Step 3: 附件校验、上传与原子下载（含断点重试队列 sync_file_queue）
                     val conflictsBeforeFiles = syncV2Dao.getUnresolvedConflicts().size
+                    val needFullAttachmentScan = !scannedAllLocalInThisRun &&
+                        syncV2Dao.getMetaValue(META_ATTACHMENT_BASELINE_SCANNED) != "1"
                     val syncedFilesCount = syncAttachments(
                         baseUrl = baseUrl,
                         token = token,
+                        serverId = serverInfo.server_id,
                         syncFilesEnabled = config.syncFiles,
                         newlyReferencedRelPaths = referencedRemoteFiles,
-                        scanAllLocalMissing = true,
+                        scanAllLocalMissing = needFullAttachmentScan,
                         onProgress = reportProgress,
                     )
+                    syncV2Dao.upsertMeta(SyncMetaEntity(META_ATTACHMENT_BASELINE_SCANNED, "1"))
 
                     conflictsCount += (syncV2Dao.getUnresolvedConflicts().size - conflictsBeforeFiles).coerceAtLeast(0)
                     val pendingFiles = syncV2Dao.getAllFileQueue().size
@@ -1006,7 +1056,7 @@ class IncrementalSyncEngine(
             // 首次对账时不可读的工作区尚无基线；凭据修复后先保护本地配置，再应用暂存的云端版本。
             if (pending.entityType == "workspace" &&
                 syncV2Dao.getEntityState(pending.entityType, pending.entityId) == null) {
-                val local = coverage?.snapshot()?.get(pending.entityType to pending.entityId)
+                val local = coverage?.snapshotEntity(pending.entityType, pending.entityId)
                 if (local != null && CanonicalSyncHash.computeSemanticHash(pending.entityType, local, localFilesDir) !=
                     pending.contentHash) {
                     saveLocalConflictRecord(
@@ -1048,6 +1098,7 @@ class IncrementalSyncEngine(
         deviceName: String,
         serverId: String,
         targetRevision: Long,
+        sshWorkspaceIds: Set<String> = emptySet(),
         onProgress: (String) -> Unit,
     ): PullOutcome {
         val allChanges = mutableListOf<SyncV2ChangeItemDto>()
@@ -1087,13 +1138,21 @@ class IncrementalSyncEngine(
 
         // 读取本地当前快照映射 (entityType, entityId) -> portableJson
         onProgress("正在扫描本地数据并对齐云端基线...")
-        val localSnapshotMap = collectLocalEntitySnapshotMap()
+        val localSnapshotMap = collectLocalEntitySnapshotMap(
+            refreshWorkspaces = false,
+            sshWorkspaceIds = sshWorkspaceIds,
+        )
         val now = System.currentTimeMillis()
         var pulledConvs = 0
         var syncedAssts = 0
         var syncedProvs = 0
         var conflicts = 0
         val refFiles = LinkedHashSet<String>()
+        for ((key, rawJson) in localSnapshotMap) {
+            refFiles.addAll(
+                CanonicalSyncHash.extractReferencedFilesFromEntity(key.first, rawJson, localFilesDir)
+            )
+        }
 
         // 按外键依赖顺序排列，防止 media_node / media_record 早于 media_session 落库触发外键失败
         val orderedChanges = allChanges.sortedWith(
@@ -1386,7 +1445,7 @@ class IncrementalSyncEngine(
         // 拉取请求在网络中等待时，用户仍可修改本地扩展数据。确认当前内容仍等于基线后才应用；
         // 新修改固化为旧修订上的待推项，让服务端保留双方冲突副本。
         if (!forceMemory && !alreadyIdentical && currentState != null && change.entity_type in ExtendedSyncTypes.all) {
-            val local = coverage?.snapshot()?.get(change.entity_type to change.entity_id)
+            val local = coverage?.snapshotEntity(change.entity_type, change.entity_id)
             // 等待网络期间密钥也可能失效；快照重新检查后，不能把不可读误判为本地删除。
             if (isUnavailable(change.entity_type, change.entity_id)) {
                 stageUnavailableChange(change, remoteHash, now)
@@ -1434,6 +1493,10 @@ class IncrementalSyncEngine(
                         applyRemoteUpsertLocally(change.entity_type, change.entity_id, change.payload)
                     }
                 }
+            }
+            if (fastCache.isSupported && change.entity_type !in setOf("memory_file", "managed_file")) {
+                val seqAfterApply = fastCache.getDirtySeq(change.entity_type, change.entity_id)
+                fastCache.clearDirtyIfSeq(change.entity_type, change.entity_id, seqAfterApply)
             }
         }
 
@@ -1644,11 +1707,25 @@ class IncrementalSyncEngine(
         return "$entityType:$fallbackId"
     }
 
+    private data class LocalDiffOutcome(
+        val referencedFiles: Set<String> = emptySet(),
+        val scannedFullSnapshot: Boolean = false,
+    )
+
+    private suspend fun resolveSshWorkspaceIds(): Set<String> =
+        coverage?.sshWorkspaceIds()
+            ?: database?.workspaceDao()?.getAll()?.filter { it.isSsh() }?.mapTo(HashSet()) { it.id }
+            ?: emptySet()
+
     /**
      * 采集当前本地全部 9 类同步实体的可移植 JSON 快照映射 `(entityType, entityId) -> portableJson`。
      */
-    private suspend fun collectLocalEntitySnapshotMap(): Map<Pair<String, String>, String> {
+    private suspend fun collectLocalEntitySnapshotMap(
+        refreshWorkspaces: Boolean = true,
+        sshWorkspaceIds: Set<String>? = null,
+    ): Map<Pair<String, String>, String> {
         val currentSettings = settingsStore.awaitLoaded()
+        val sshIds = sshWorkspaceIds ?: resolveSshWorkspaceIds()
         val result = LinkedHashMap<Pair<String, String>, String>()
 
         // 1. Assistants
@@ -1679,7 +1756,7 @@ class IncrementalSyncEngine(
             } ?: return@forEach
             // 尚未产生实际内容的空白草稿会话不参与云端同步
             if (conv.title.isBlank() && conv.messageNodes.isEmpty()) return@forEach
-            val portable = portableConversation(conv)
+            val portable = portableConversation(conv, sshIds)
             result["conversation" to idStr] = json.encodeToString(portable)
         }
 
@@ -1703,20 +1780,220 @@ class IncrementalSyncEngine(
             val payload = MemorySyncPayload.fromEntity(file).validate()
             result["memory_file" to payload.entityId] = json.encodeToString(payload)
         }
-        coverage?.snapshot()?.let { result.putAll(it) }
+        coverage?.snapshot(refreshWorkspaces)?.let { result.putAll(it) }
         return result
+    }
+
+    private suspend fun loadSingleRoomEntityPayload(
+        entityType: String,
+        entityId: String,
+        sshWorkspaceIds: Set<String>,
+    ): String? = when (entityType) {
+        "conversation" -> {
+            val uuid = runCatching { Uuid.parse(entityId) }.getOrNull() ?: return null
+            val conv = conversationBridge.loadConversation(uuid) ?: return null
+            if (conv.title.isBlank() && conv.messageNodes.isEmpty()) return null
+            json.encodeToString(portableConversation(conv, sshWorkspaceIds))
+        }
+        "folder" -> folderDAO.getFolderById(entityId)?.let {
+            json.encodeToString(FolderSyncV2Payload.fromEntity(it, it.createAt))
+        }
+        "favorite" -> favoriteDAO.getById(entityId)?.let {
+            json.encodeToString(FavoriteSyncV2Payload.fromEntity(it))
+        }
+        "media_session" -> mediaCreationDAO.getSession(entityId)?.let {
+            json.encodeToString(MediaSessionSyncV2Payload.fromEntity(it))
+        }
+        "media_node" -> mediaCreationDAO.getNode(entityId)?.let {
+            json.encodeToString(MediaNodeSyncV2Payload.fromEntity(it))
+        }
+        "media_record" -> mediaCreationDAO.getRecord(entityId)?.let {
+            json.encodeToString(MediaRecordSyncV2Payload.fromEntity(it))
+        }
+        in ExtendedSyncTypes.all -> coverage?.snapshotEntity(entityType, entityId)
+        else -> null
     }
 
     /**
      * 对比本地当前快照与 `sync_entity_state` 基线，把所有未入队的新增、修改与删除补入 `sync_outbox`。
-     * 尤其负责捕获 `Settings` 中助手、提供商及扩展配置的增删改。
+     * 启用 `useFastDirtyPath` 时，仅读取并哈希 `sync_local_dirty` 标记的变更实体与轻量级设置/文件缓存，
+     * 避免在手表等低功耗设备上每次全量反序列化所有历史会话。
      */
-    private suspend fun enqueueLocalDiffIntoOutbox(includeRoomEntities: Boolean) {
+    private suspend fun enqueueLocalDiffIntoOutbox(
+        includeRoomEntities: Boolean,
+        useFastDirtyPath: Boolean = false,
+        refreshWorkspaces: Boolean = true,
+        sshWorkspaceIds: Set<String>? = null,
+    ): LocalDiffOutcome {
         val currentSettings = settingsStore.awaitLoaded()
         val statesByKey = syncV2Dao.getAllEntityStates().associateBy { it.entityType to it.entityId }
+        val checkedTypes = if (includeRoomEntities) {
+            setOf(
+                "assistant",
+                "provider",
+                "folder",
+                "conversation",
+                "favorite",
+                "memory_file",
+                "media_session",
+                "media_node",
+                "media_record",
+            ) + (if (coverage != null) {
+                ExtendedSyncTypes.all - setOf("translation_history", "managed_file")
+            } else {
+                emptySet()
+            })
+        } else {
+            setOf("assistant", "provider")
+        }
+
+        if (includeRoomEntities && useFastDirtyPath && fastCache.isSupported) {
+            val liveRoomKeys = fastCache.loadLiveEntityKeys(
+                includeExtended = coverage != null,
+                memoryEntityIdOf = MemorySyncPayload::entityId,
+                pathIdOf = SyncCoverageStore::pathId,
+                isResourcePath = ExtendedSyncTypes::isResourcePath,
+            )
+            val filesAndPrefs = if (coverage != null) coverage.snapshotFilesAndPrefs() else emptyMap()
+            if (liveRoomKeys != null && filesAndPrefs != null) {
+                val dirtyEntries = fastCache.getDirtyEntries()
+                val sshIds = sshWorkspaceIds ?: resolveSshWorkspaceIds()
+                val snapshotToCheck = LinkedHashMap<Pair<String, String>, String>()
+                val settingsKeys = HashSet<Pair<String, String>>()
+
+                currentSettings.assistants.forEach { asst ->
+                    val key = "assistant" to asst.id.toString()
+                    settingsKeys.add(key)
+                    snapshotToCheck[key] = json.encodeToString(asst.toPortableAttachmentPaths(localFilesDir))
+                }
+                currentSettings.providers.forEach { prov ->
+                    val key = "provider" to prov.id.toString()
+                    settingsKeys.add(key)
+                    snapshotToCheck[key] = json.encodeToString(prov)
+                }
+                buildExtraSettingsMap(currentSettings).forEach { (k, v) ->
+                    val key = "extra_setting" to k
+                    settingsKeys.add(key)
+                    snapshotToCheck[key] = v
+                }
+
+                snapshotToCheck.putAll(filesAndPrefs)
+
+                val scanMemoryFiles = dirtyEntries.any { it.entityType == "memory_file" } ||
+                    liveRoomKeys.any {
+                        it.first == "memory_file" &&
+                            (statesByKey[it] == null || statesByKey[it]?.deleted == true)
+                    }
+                if (scanMemoryFiles) {
+                    memoryRepository.getAllFiles().forEach { file ->
+                        val payload = MemorySyncPayload.fromEntity(file).validate()
+                        snapshotToCheck["memory_file" to payload.entityId] = json.encodeToString(payload)
+                    }
+                }
+
+                val scanManagedFiles = coverage != null && (
+                    dirtyEntries.any { it.entityType == "managed_file" } ||
+                        liveRoomKeys.any {
+                            it.first == "managed_file" &&
+                                (statesByKey[it] == null || statesByKey[it]?.deleted == true)
+                        }
+                    )
+                if (scanManagedFiles) {
+                    database?.syncCoverageDao()?.managedFiles()
+                        ?.filter { ExtendedSyncTypes.isResourcePath(it.relativePath) }
+                        ?.forEach { managed ->
+                            val payload = JsonObject(
+                                (json.encodeToJsonElement(managed) as JsonObject) - "id"
+                            ).toString()
+                            snapshotToCheck["managed_file" to SyncCoverageStore.pathId(managed.relativePath)] = payload
+                        }
+                }
+
+                val nonSentinelRoomTypes = setOf(
+                    "folder",
+                    "conversation",
+                    "favorite",
+                    "media_session",
+                    "media_node",
+                    "media_record",
+                    "workspace",
+                    "usage_record",
+                    "translation_history",
+                    "gen_media",
+                    "memory_progress",
+                )
+                val candidateRoomKeys = LinkedHashSet<Pair<String, String>>()
+                for (entry in dirtyEntries) {
+                    if (entry.entityType in nonSentinelRoomTypes) {
+                        candidateRoomKeys.add(entry.entityType to entry.entityId)
+                    }
+                }
+                for (key in liveRoomKeys) {
+                    if (key.first in nonSentinelRoomTypes) {
+                        val st = statesByKey[key]
+                        if (st == null || st.deleted) {
+                            candidateRoomKeys.add(key)
+                        }
+                    }
+                }
+
+                for ((entityType, entityId) in candidateRoomKeys) {
+                    if (isUnavailable(entityType, entityId)) continue
+                    val raw = loadSingleRoomEntityPayload(entityType, entityId, sshIds)
+                    if (raw != null) {
+                        snapshotToCheck[entityType to entityId] = raw
+                    } else if (entityType !in setOf("translation_history", "managed_file")) {
+                        val state = statesByKey[entityType to entityId]
+                        if ((state != null && !state.deleted) ||
+                            syncV2Dao.getOutboxEntry(entityType, entityId) != null) {
+                            syncMutationRecorder.recordDelete(entityType, entityId)
+                        }
+                    }
+                }
+
+                val localRefFiles = LinkedHashSet<String>()
+                for ((key, rawJson) in snapshotToCheck) {
+                    val (entityType, entityId) = key
+                    val (norm, hash) = CanonicalSyncHash.normalizeAndComputeHash(entityType, rawJson, localFilesDir)
+                    val state = statesByKey[key]
+                    if (state == null || state.deleted || state.lastSyncedHash != hash) {
+                        syncMutationRecorder.recordNormalizedUpsert(entityType, entityId, norm, hash)
+                        localRefFiles.addAll(
+                            CanonicalSyncHash.extractReferencedFilesFromEntity(entityType, norm, localFilesDir)
+                        )
+                    }
+                }
+
+                val allLiveKeys = HashSet<Pair<String, String>>(
+                    liveRoomKeys.size + settingsKeys.size + filesAndPrefs.size
+                )
+                allLiveKeys.addAll(liveRoomKeys)
+                allLiveKeys.addAll(settingsKeys)
+                allLiveKeys.addAll(filesAndPrefs.keys)
+
+                for ((key, state) in statesByKey) {
+                    if (!state.deleted && key.first in checkedTypes && key !in allLiveKeys &&
+                        !isUnavailable(key.first, key.second)) {
+                        syncMutationRecorder.recordDelete(key.first, key.second)
+                    }
+                }
+
+                fastCache.clearDirtyEntries(dirtyEntries)
+                return LocalDiffOutcome(referencedFiles = localRefFiles, scannedFullSnapshot = false)
+            }
+        }
+
+        val dirtyBeforeFullScan = if (includeRoomEntities && fastCache.isSupported) {
+            fastCache.getDirtyEntries()
+        } else {
+            emptyList()
+        }
 
         val snapshotMap = if (includeRoomEntities) {
-            collectLocalEntitySnapshotMap()
+            collectLocalEntitySnapshotMap(
+                refreshWorkspaces = refreshWorkspaces,
+                sshWorkspaceIds = sshWorkspaceIds,
+            )
         } else {
             val map = LinkedHashMap<Pair<String, String>, String>()
             currentSettings.assistants.forEach { asst ->
@@ -1732,43 +2009,43 @@ class IncrementalSyncEngine(
             map
         }
 
+        val localRefFiles = LinkedHashSet<String>()
         // 1. 新增或修改项
         for ((key, rawJson) in snapshotMap) {
             val (entityType, entityId) = key
-            val norm = CanonicalSyncHash.normalizeEntityPayload(entityType, rawJson, localFilesDir)
-            val hash = CanonicalSyncHash.computeSemanticHash(entityType, norm, localFilesDir)
+            val (norm, hash) = CanonicalSyncHash.normalizeAndComputeHash(entityType, rawJson, localFilesDir)
             val state = statesByKey[key]
             if (state == null || state.deleted || state.lastSyncedHash != hash) {
-                syncMutationRecorder.recordUpsert(entityType, entityId, norm)
+                syncMutationRecorder.recordNormalizedUpsert(entityType, entityId, norm, hash)
+            }
+            if (includeRoomEntities) {
+                localRefFiles.addAll(
+                    CanonicalSyncHash.extractReferencedFilesFromEntity(entityType, norm, localFilesDir)
+                )
             }
         }
 
         // 2. 已在基线中存在但本地当前已删除的项（例如删除了某个自定义助手或提供商）
-        val checkedTypes = if (includeRoomEntities) {
-            setOf("assistant", "provider", "folder", "conversation", "favorite", "memory_file", "media_session", "media_node", "media_record") +
-                (if (coverage !=
-                    null) {
-                    ExtendedSyncTypes.all - setOf("translation_history", "managed_file")
-                } else {
-                    emptySet()
-                })
-        } else {
-            setOf("assistant", "provider")
-        }
         for ((key, state) in statesByKey) {
             if (!state.deleted && key.first in checkedTypes && key !in snapshotMap &&
                 !isUnavailable(key.first, key.second)) {
                 syncMutationRecorder.recordDelete(key.first, key.second)
             }
         }
+
+        if (dirtyBeforeFullScan.isNotEmpty()) {
+            fastCache.clearDirtyEntries(dirtyBeforeFullScan)
+        }
+        return LocalDiffOutcome(referencedFiles = localRefFiles, scannedFullSnapshot = includeRoomEntities)
     }
 
-    private suspend fun portableConversation(conversation: Conversation): Conversation {
+    private fun portableConversation(
+        conversation: Conversation,
+        sshWorkspaceIds: Set<String>,
+    ): Conversation {
         val portable = conversation.toPortableAttachmentPaths(localFilesDir)
-        return if (coverage != null &&
-            database?.workspaceDao()?.getById(
-                conversation.config?.workspaceId?.toString().orEmpty()
-            )?.isSsh() != true) {
+        val wsId = conversation.config?.workspaceId?.toString().orEmpty()
+        return if (coverage != null && wsId !in sshWorkspaceIds) {
             portable.copy(workspaceCwd = null)
         } else {
             portable
@@ -1945,6 +2222,7 @@ class IncrementalSyncEngine(
     private suspend fun syncAttachments(
         baseUrl: String,
         token: String,
+        serverId: String,
         syncFilesEnabled: Boolean,
         newlyReferencedRelPaths: Set<String>,
         scanAllLocalMissing: Boolean,
@@ -1958,6 +2236,42 @@ class IncrementalSyncEngine(
             collectAllReferencedManagedPathsFromLocalEntities().filterTo(downloadCandidates) {
                 AttachmentPathNormalizer.isManagedRelativePath(it)
             }
+        } else {
+            for (conflict in syncV2Dao.getUnresolvedConflicts()) {
+                for (payload in listOf(conflict.localPayload, conflict.serverPayload)) {
+                    CanonicalSyncHash.extractReferencedFilesFromEntity(conflict.entityType, payload, localFilesDir)
+                        .filterTo(downloadCandidates) { AttachmentPathNormalizer.isManagedRelativePath(it) }
+                }
+            }
+        }
+
+        val diskCache = HashMap(fastCache.getAllFileCache())
+        val pendingCacheWrites = LinkedHashMap<String, SyncLocalFastCache.CachedFileEntry>()
+
+        fun cachedOrComputeSha(rel: String, file: File): String {
+            val size = file.length()
+            val mod = file.lastModified()
+            val cached = diskCache[rel]
+            if (cached != null && cached.size == size && cached.modified == mod && cached.sha256.isNotBlank()) {
+                return cached.sha256
+            }
+            val sha = runCatching { CanonicalSyncHash.sha256File(file) }.getOrDefault("")
+            if (sha.isNotBlank()) {
+                val entry = SyncLocalFastCache.CachedFileEntry(
+                    path = rel,
+                    size = size,
+                    modified = mod,
+                    sha256 = sha,
+                    blobPath = cached?.blobPath.orEmpty(),
+                    blobModified = cached?.blobModified ?: 0L,
+                    verifiedServerId = if (cached?.verifiedSha256 == sha) cached.verifiedServerId else "",
+                    verifiedSha256 = if (cached?.verifiedSha256 == sha) cached.verifiedSha256 else "",
+                    verifiedSize = if (cached?.verifiedSha256 == sha) cached.verifiedSize else 0L,
+                )
+                diskCache[rel] = entry
+                pendingCacheWrites[rel] = entry
+            }
+            return sha
         }
 
         // 把本地缺失的远端引用附件先登记进下载队列（即便当前关闭了 syncFiles，后续打开开关也能自动补拉！）
@@ -1968,10 +2282,9 @@ class IncrementalSyncEngine(
             val f = File(localFilesDir, rel)
             !f.isFile ||
                 (if (rel.startsWith("sync_blobs/")) {
-                    CanonicalSyncHash.sha256File(f) != rel.substringAfterLast('/')
+                    cachedOrComputeSha(rel, f) != rel.substringAfterLast('/')
                 } else {
-                    f.length() ==
-                        0L
+                    f.length() == 0L
                 })
         }
         if (missingLocalRelPaths.isNotEmpty()) {
@@ -1987,12 +2300,13 @@ class IncrementalSyncEngine(
         }
 
         if (!syncFilesEnabled) {
+            fastCache.upsertFileCacheBatch(pendingCacheWrites.values)
             return 0
         }
 
         var syncedCount = 0
 
-        // 1. 扫描本地受管目录文件并校验服务端缺失/损坏列表
+        // 1. 扫描本地受管目录文件并仅对未校验或有改动的文件校验服务端缺失/损坏列表
         onProgress("正在校验多媒体与附件完整性...")
         val managedDirs = listOf(
             FileFolders.UPLOAD,
@@ -2003,6 +2317,8 @@ class IncrementalSyncEngine(
             "images",
         )
         val localFilesToCheck = mutableListOf<FileCheckItemDto>()
+        val shaByRelPath = HashMap<String, String>()
+        val fileMetaByRelPath = HashMap<String, Pair<Long, Long>>()
         for (dirName in managedDirs) {
             val dir = File(localFilesDir, dirName)
             if (!dir.isDirectory) continue
@@ -2011,20 +2327,31 @@ class IncrementalSyncEngine(
                 .forEach { file ->
                     val rel = file.relativeTo(localFilesDir).invariantSeparatorsPath
                     if (AttachmentPathNormalizer.isManagedRelativePath(rel)) {
-                        val sha = runCatching { CanonicalSyncHash.sha256File(file) }.getOrDefault("")
-                        localFilesToCheck.add(
-                            FileCheckItemDto(
-                                path = rel,
-                                hash = sha,
-                                size = file.length(),
+                        val size = file.length()
+                        val mod = file.lastModified()
+                        val sha = cachedOrComputeSha(rel, file)
+                        shaByRelPath[rel] = sha
+                        fileMetaByRelPath[rel] = size to mod
+                        val cached = diskCache[rel]
+                        val alreadyVerified = cached != null &&
+                            sha.isNotBlank() &&
+                            cached.verifiedServerId == serverId &&
+                            cached.verifiedSha256 == sha &&
+                            cached.verifiedSize == size
+                        if (!alreadyVerified) {
+                            localFilesToCheck.add(
+                                FileCheckItemDto(
+                                    path = rel,
+                                    hash = sha,
+                                    size = size,
+                                )
                             )
-                        )
+                        }
                     }
                 }
         }
 
         val missingOnServer = LinkedHashSet<String>()
-        val shaByRelPath = localFilesToCheck.associate { it.path to it.hash }
 
         for (chunk in localFilesToCheck.chunked(FILE_CHECK_BATCH_LIMIT)) {
             val checkHttpReq = Request.Builder()
@@ -2036,7 +2363,27 @@ class IncrementalSyncEngine(
                 okHttpClient.newCall(checkHttpReq).execute().use { resp ->
                     if (resp.isSuccessful) {
                         val dto = json.decodeFromString<FilesCheckResponseDto>(resp.body?.string().orEmpty())
+                        val missingSet = dto.missing_paths.toHashSet()
                         missingOnServer.addAll(dto.missing_paths)
+                        for (item in chunk) {
+                            if (item.path !in missingSet && item.hash.isNotBlank()) {
+                                val prev = diskCache[item.path]
+                                val meta = fileMetaByRelPath[item.path]
+                                val entry = SyncLocalFastCache.CachedFileEntry(
+                                    path = item.path,
+                                    size = meta?.first ?: item.size,
+                                    modified = meta?.second ?: prev?.modified ?: 0L,
+                                    sha256 = item.hash,
+                                    blobPath = prev?.blobPath.orEmpty(),
+                                    blobModified = prev?.blobModified ?: 0L,
+                                    verifiedServerId = serverId,
+                                    verifiedSha256 = item.hash,
+                                    verifiedSize = item.size,
+                                )
+                                diskCache[item.path] = entry
+                                pendingCacheWrites[item.path] = entry
+                            }
+                        }
                     }
                 }
             }.onFailure { e ->
@@ -2064,7 +2411,7 @@ class IncrementalSyncEngine(
             }
             onProgress("正在上传附件 (${idx + 1}/${uploadList.size})...")
             val sha = shaByRelPath[relPath]?.takeIf { it.isNotBlank() }
-                ?: runCatching { CanonicalSyncHash.sha256File(file) }.getOrDefault("")
+                ?: cachedOrComputeSha(relPath, file)
 
             val uploadRes = runCatching {
                 val formBuilder = MultipartBody.Builder()
@@ -2089,6 +2436,23 @@ class IncrementalSyncEngine(
             uploadRes.onSuccess {
                 syncedCount++
                 syncV2Dao.deleteFileQueue("upload", relPath)
+                if (sha.isNotBlank()) {
+                    val prev = diskCache[relPath]
+                    val size = file.length()
+                    val entry = SyncLocalFastCache.CachedFileEntry(
+                        path = relPath,
+                        size = size,
+                        modified = file.lastModified(),
+                        sha256 = sha,
+                        blobPath = prev?.blobPath.orEmpty(),
+                        blobModified = prev?.blobModified ?: 0L,
+                        verifiedServerId = serverId,
+                        verifiedSha256 = sha,
+                        verifiedSize = size,
+                    )
+                    diskCache[relPath] = entry
+                    pendingCacheWrites[relPath] = entry
+                }
             }.onFailure { err ->
                 if (err is CancellationException) throw err
                 logWarn("Failed to upload attachment $relPath", err)
@@ -2124,8 +2488,7 @@ class IncrementalSyncEngine(
             val destFile = File(localFilesDir, relPath)
             if (destFile.isFile &&
                 (if (relPath.startsWith("sync_blobs/")) {
-                    CanonicalSyncHash.sha256File(destFile) ==
-                        relPath.substringAfterLast('/')
+                    cachedOrComputeSha(relPath, destFile) == relPath.substringAfterLast('/')
                 } else {
                     destFile.length() > 0L
                 })) {
@@ -2141,6 +2504,27 @@ class IncrementalSyncEngine(
                 if (downloaded) syncedCount++
                 if (downloaded) {
                     syncV2Dao.deleteFileQueue("download", relPath)
+                    if (destFile.isFile) {
+                        val sha = if (relPath.startsWith("sync_blobs/")) {
+                            relPath.substringAfterLast('/')
+                        } else {
+                            diskCache[relPath]?.sha256.orEmpty()
+                        }
+                        if (sha.isNotBlank()) {
+                            val size = destFile.length()
+                            val entry = SyncLocalFastCache.CachedFileEntry(
+                                path = relPath,
+                                size = size,
+                                modified = destFile.lastModified(),
+                                sha256 = sha,
+                                verifiedServerId = serverId,
+                                verifiedSha256 = sha,
+                                verifiedSize = size,
+                            )
+                            diskCache[relPath] = entry
+                            pendingCacheWrites[relPath] = entry
+                        }
+                    }
                 } else {
                     syncV2Dao.markFileQueueRetry("download", relPath, "云端文件尚未就绪", System.currentTimeMillis())
                 }
@@ -2151,6 +2535,7 @@ class IncrementalSyncEngine(
             }
         }
 
+        fastCache.upsertFileCacheBatch(pendingCacheWrites.values)
         coverage?.materializeResources()
         return syncedCount
     }
