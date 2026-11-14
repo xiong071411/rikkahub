@@ -140,6 +140,16 @@ class SyncLocalFastCacheTest {
         // 最新序号的 CAS 清理成功移除
         cache.clearDirtyEntries(afterCas)
         assertTrue(cache.getDirtyEntries().isEmpty())
+
+        val genMedia = GenMediaEntity(
+            path = "images/out.png",
+            modelId = "img-1",
+            prompt = "test",
+            createAt = 200L,
+        )
+        db.genMediaDao().insert(genMedia)
+        val genMediaDirty = cache.getDirtyEntries().single()
+        assertEquals("gen_media" to genMedia.syncId, genMediaDirty.entityType to genMediaDirty.entityId)
     }
 
     @Test

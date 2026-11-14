@@ -297,7 +297,7 @@ class SyncLocalFastCache(
     }
 
     companion object {
-        private const val CURRENT_TRIGGER_VERSION = 1
+        private const val CURRENT_TRIGGER_VERSION = 2
 
         fun createTablesAndTriggers(db: SupportSQLiteDatabase) {
             db.execSQL(
@@ -341,7 +341,7 @@ class SyncLocalFastCache(
 
             val existingTables = HashSet<String>()
             db.query("SELECT name FROM sqlite_master WHERE type = 'table'").use { c ->
-                while (c.moveToNext()) existingTables.add(c.getString(0))
+                while (c.moveToNext()) existingTables.add(c.getString(0).lowercase())
             }
 
             fun upsertDirtySql(entityType: String, idExpr: String): String = """
@@ -354,7 +354,7 @@ class SyncLocalFastCache(
             """.trimIndent()
 
             fun installPkTriggers(table: String, entityType: String, idCol: String = "id", guardNonEmpty: Boolean = false) {
-                if (table !in existingTables) return
+                if (table.lowercase() !in existingTables) return
                 val insertGuard = if (guardNonEmpty) "WHEN NEW.$idCol != ''" else ""
                 val deleteGuard = if (guardNonEmpty) "WHEN OLD.$idCol != ''" else ""
                 for (op in listOf("INSERT", "UPDATE", "DELETE")) {
