@@ -297,7 +297,7 @@ class SyncLocalFastCache(
     }
 
     companion object {
-        private const val CURRENT_TRIGGER_VERSION = 2
+        private const val CURRENT_TRIGGER_VERSION = 3
 
         fun createTablesAndTriggers(db: SupportSQLiteDatabase) {
             db.execSQL(
@@ -344,12 +344,17 @@ class SyncLocalFastCache(
                 while (c.moveToNext()) existingTables.add(c.getString(0).lowercase())
             }
 
+            // Room 的 INSERT / UPDATE OR ABORT 会覆盖触发器内的 OR REPLACE / OR IGNORE，
+            // 已有脏标记会因此触发主键冲突，连带回滚会话保存。先递增，再仅在缺失时插入，
+            // 使触发器不依赖冲突策略；两步仍在业务写事务内原子执行，保留 dirty_seq 的 CAS 语义。
             fun upsertDirtySql(entityType: String, idExpr: String): String = """
-                INSERT OR REPLACE INTO sync_local_dirty (entity_type, entity_id, dirty_seq)
-                VALUES (
-                    '$entityType',
-                    $idExpr,
-                    COALESCE((SELECT dirty_seq FROM sync_local_dirty WHERE entity_type = '$entityType' AND entity_id = $idExpr), 0) + 1
+                UPDATE sync_local_dirty SET dirty_seq = dirty_seq + 1
+                WHERE entity_type = '$entityType' AND entity_id = $idExpr;
+                INSERT INTO sync_local_dirty (entity_type, entity_id, dirty_seq)
+                SELECT '$entityType', $idExpr, 1
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM sync_local_dirty
+                    WHERE entity_type = '$entityType' AND entity_id = $idExpr
                 );
             """.trimIndent()
 

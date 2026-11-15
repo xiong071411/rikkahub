@@ -153,6 +153,128 @@ class SyncLocalFastCacheTest {
     }
 
     @Test
+    fun `Room ABORT writes update and reinsert conversations with existing dirty markers`() = runBlocking {
+        val (_, db, _) = createEnv("dirty-room-abort")
+        val cache = SyncLocalFastCache(db)
+        assertTrue(cache.getDirtyEntries().isEmpty())
+        val conversation = ConversationEntity(
+            id = Uuid.random().toString(),
+            assistantId = Uuid.random().toString(),
+            title = "初始标题",
+            nodes = "[]",
+            createAt = 1000L,
+            updateAt = 1000L,
+            chatSuggestions = "[]",
+            isPinned = false,
+        )
+        db.conversationDao().insert(conversation)
+        val beforeUpdate = cache.getDirtyEntries()
+
+        // @Update 默认生成 UPDATE OR ABORT，不能让外层策略使脏标记的主键冲突。
+        val updated = conversation.copy(title = "已保存的回复", updateAt = 2000L)
+        db.conversationDao().update(updated)
+        assertEquals(updated, db.conversationDao().getConversationById(conversation.id))
+        assertEquals(2L, cache.getDirtySeq("conversation", conversation.id))
+        cache.clearDirtyEntries(beforeUpdate)
+        assertEquals(2L, cache.getDirtySeq("conversation", conversation.id))
+
+        // 删除后脏标记仍在；恢复同一会话时 INSERT OR ABORT 也必须成功。
+        db.conversationDao().deleteById(conversation.id)
+        assertEquals(3L, cache.getDirtySeq("conversation", conversation.id))
+        db.conversationDao().insert(updated)
+        assertEquals(updated, db.conversationDao().getConversationById(conversation.id))
+        assertEquals(4L, cache.getDirtySeq("conversation", conversation.id))
+    }
+
+    @Test
+    fun `Room message updates advance conversation and memory progress dirty markers`() = runBlocking {
+        val (_, db, _) = createEnv("dirty-message-update")
+        val cache = SyncLocalFastCache(db)
+        assertTrue(cache.getDirtyEntries().isEmpty())
+        val convId = Uuid.random().toString()
+        db.conversationDao().insert(
+            ConversationEntity(
+                id = convId,
+                assistantId = Uuid.random().toString(),
+                title = "消息更新",
+                nodes = "[]",
+                createAt = 1000L,
+                updateAt = 1000L,
+                chatSuggestions = "[]",
+                isPinned = false,
+            )
+        )
+        db.memoryConsolidationDao().upsert(MemoryConsolidationEntity(convId, 1000L))
+        val node = MessageNodeEntity(
+            id = Uuid.random().toString(),
+            conversationId = convId,
+            nodeIndex = 0,
+            messages = JsonInstant.encodeToString(listOf(UIMessage.user("初始消息"))),
+            selectIndex = 0,
+        )
+        db.messageNodeDao().insert(node)
+        val beforeUpdate = cache.getDirtyEntries()
+        val updated = node.copy(messages = JsonInstant.encodeToString(listOf(UIMessage.user("更新消息"))))
+        db.messageNodeDao().update(updated)
+
+        assertEquals(listOf(updated), db.messageNodeDao().getNodesOfConversation(convId))
+        cache.clearDirtyEntries(beforeUpdate)
+        assertEquals(setOf("conversation", "memory_progress"), cache.getDirtyEntries().map { it.entityType }.toSet())
+        for (entry in beforeUpdate) {
+            assertEquals(entry.dirtySeq + 1, cache.getDirtySeq(entry.entityType, entry.entityId))
+        }
+    }
+
+    @Test
+    fun `version two triggers upgrade without losing dirty markers or file cache`() = runBlocking {
+        val (_, db, _) = createEnv("dirty-trigger-upgrade")
+        val cache = SyncLocalFastCache(db)
+        assertTrue(cache.getDirtyEntries().isEmpty())
+        val conversation = ConversationEntity(
+            id = Uuid.random().toString(),
+            assistantId = Uuid.random().toString(),
+            title = "升级前",
+            nodes = "[]",
+            createAt = 1000L,
+            updateAt = 1000L,
+            chatSuggestions = "[]",
+            isPinned = false,
+        )
+        db.conversationDao().insert(conversation)
+        val cachedFile = SyncLocalFastCache.CachedFileEntry("upload/retained.txt", 12L, 1000L, "retained-sha")
+        cache.upsertFileCache(cachedFile)
+        val sqlDb = db.openHelper.writableDatabase
+        sqlDb.execSQL("DROP TRIGGER trg_sync_dirty_conversationentity_update")
+        sqlDb.execSQL(
+            """
+            CREATE TRIGGER trg_sync_dirty_conversationentity_update AFTER UPDATE ON conversationentity
+            BEGIN
+                INSERT OR REPLACE INTO sync_local_dirty (entity_type, entity_id, dirty_seq)
+                VALUES ('conversation', NEW.id, COALESCE((
+                    SELECT dirty_seq FROM sync_local_dirty
+                    WHERE entity_type = 'conversation' AND entity_id = NEW.id
+                ), 0) + 1);
+            END
+            """.trimIndent()
+        )
+        sqlDb.execSQL("UPDATE sync_fast_meta SET value = '2' WHERE key = 'trigger_version'")
+
+        // 与 AppDatabaseFactory.onOpen 相同的升级入口，只替换触发器，保留已有缓存和待同步变更。
+        SyncLocalFastCache.createTablesAndTriggers(sqlDb)
+        assertEquals(1L, cache.getDirtySeq("conversation", conversation.id))
+        assertEquals(cachedFile, cache.getFileCache(cachedFile.path))
+        val updated = conversation.copy(title = "升级后")
+        db.conversationDao().update(updated)
+        assertEquals(updated, db.conversationDao().getConversationById(conversation.id))
+        assertEquals(2L, cache.getDirtySeq("conversation", conversation.id))
+
+        SyncLocalFastCache.createTablesAndTriggers(sqlDb)
+        db.conversationDao().update(updated.copy(title = "再次保存"))
+        assertEquals(3L, cache.getDirtySeq("conversation", conversation.id))
+        assertEquals(cachedFile, cache.getFileCache(cachedFile.path))
+    }
+
+    @Test
     fun `persisted file cache survives SyncCoverageStore restart and matches snapshotEntity`() = runBlocking {
         val (context, db, filesDir) = createEnv("file-cache-restart")
         val assetFile = File(filesDir, "upload/sample.txt").apply {
