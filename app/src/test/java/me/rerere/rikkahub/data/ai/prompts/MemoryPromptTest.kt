@@ -60,6 +60,10 @@ class MemoryPromptTest {
         assertTrue(compactPrompt.contains("[stated]"))
         assertTrue(compactPrompt.contains("[observed]"))
         assertTrue(compactPrompt.contains("/areas/learning/"))
+        assertTrue(compactPrompt.contains("name, title, description and aliases"))
+        assertTrue(compactPrompt.contains("Read before editing and pass if_version"))
+        assertTrue(compactPrompt.contains("Never store credentials"))
+        assertTrue(compactPrompt.contains("avoid duplicates or details that will soon go stale"))
         assertFalse(compactPrompt.contains("<memory_format>"))
         assertTrue(consolidationPrompt.contains("<memory_format>"))
     }
