@@ -91,6 +91,8 @@
   <string name="assistant_page_memory">记忆</string>
   <string name="assistant_page_memory_count">记忆: %d</string>
   <string name="assistant_page_memory_desc">启用记忆后，助手会记住你告诉它的内容，并在之后的对话中使用。对话停下来后，记忆会在后台自动整理。此功能需要模型支持工具调用才能正常工作</string>
+  <string name="assistant_page_compact_memory_prompt">精简提示词</string>
+  <string name="assistant_page_compact_memory_prompt_desc">缩短聊天中的记忆规则，同时保留记忆读取、写入和学习模式。</string>
   <string name="assistant_page_message_template">聊天内容模板</string>
   <string name="assistant_page_message_template_desc">控制聊天消息在发送给LLM之前的内容格式，通常不需要修改</string>
   <string name="assistant_page_message_template_missing_message">模板不包含 {{ message }}，用户消息将不会被发送</string>

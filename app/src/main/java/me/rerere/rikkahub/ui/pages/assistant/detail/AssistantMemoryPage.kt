@@ -228,6 +228,15 @@ private fun MemorySettingsTab(
                 headlineContent = { Text(stringResource(R.string.assistant_page_memory)) },
             )
             switchItem(
+                checked = assistant.useCompactMemoryPrompt,
+                onCheckedChange = {
+                    onUpdateAssistant(assistant.copy(useCompactMemoryPrompt = it))
+                },
+                enabled = assistant.enableMemory,
+                supportingContent = { Text(stringResource(R.string.assistant_page_compact_memory_prompt_desc)) },
+                headlineContent = { Text(stringResource(R.string.assistant_page_compact_memory_prompt)) },
+            )
+            switchItem(
                 checked = assistant.useGlobalMemory,
                 onCheckedChange = {
                     onUpdateAssistant(

@@ -47,6 +47,24 @@ class MemoryPromptTest {
     }
 
     @Test
+    fun `compact mode keeps memory behavior while full prompt remains the default`() {
+        val fullPrompt = buildMemoryPrompt(emptyList())
+        val compactPrompt = buildMemoryPrompt(emptyList(), learningMode = true, compactPrompt = true)
+        val consolidationPrompt = buildMemoryConsolidationPrompt(fullReview = false)
+
+        assertTrue(fullPrompt.contains("<memory_format>"))
+        assertTrue(compactPrompt.contains("## When to read"))
+        assertTrue(compactPrompt.contains("memory_read"))
+        assertTrue(compactPrompt.contains("memory_write"))
+        assertTrue(compactPrompt.contains("if_version"))
+        assertTrue(compactPrompt.contains("[stated]"))
+        assertTrue(compactPrompt.contains("[observed]"))
+        assertTrue(compactPrompt.contains("/areas/learning/"))
+        assertFalse(compactPrompt.contains("<memory_format>"))
+        assertTrue(consolidationPrompt.contains("<memory_format>"))
+    }
+
+    @Test
     fun `consolidation input carries the memory state and each conversation's new turns`() {
         val input = buildMemoryConsolidationInput(
             files = listOf(profile, food),

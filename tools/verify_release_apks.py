@@ -66,9 +66,9 @@ def verify(root: Path, build_tools: Path, version_code: int, version_name: str, 
                 for marker in (b"image_rotation_", "批量旋转".encode("utf-8")):
                     if not any(marker in data for data in dex):
                         raise ValueError(f"缺少批量旋转图片代码：{source}: {marker.decode()}")
-                for marker in (b"learningMemoryMode", b"/areas/learning/"):
+                for marker in (b"learningMemoryMode", b"/areas/learning/", b"useCompactMemoryPrompt"):
                     if not any(marker in data for data in dex):
-                        raise ValueError(f"缺少学习模式记忆代码：{source}: {marker.decode()}")
+                        raise ValueError(f"缺少记忆提示词选项代码：{source}: {marker.decode()}")
                 if not any(b"chemical-structure" in data for data in dex):
                     raise ValueError(f"缺少化学结构渲染代码：{source}")
                 for marker in (b"visual-diagram", "全屏查看图像".encode("utf-8"), b"Font size is in sp"):
