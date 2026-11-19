@@ -90,15 +90,109 @@ jobs:
           # 写入Google Services配置
           echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
 
-      - name: Gradle Build
+      - name: Test app migrations and sync
+        if: github.event_name == 'workflow_dispatch'
         run: |
           chmod +x gradlew
-          ./gradlew assembleGithubRelease
+          ./gradlew :app:testCoexistNormalDebugUnitTest \
+            --tests '*Sync*' --tests '*MemoryRepositoryTest' --tests '*MemoryConsolidat*' \
+            --tests '*MemoryPromptTest' --tests '*ChatInputStateTest' --tests '*MarkdownUtilsTest' \
+            --tests '*BatchImageRotation*' \
+            --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
+            '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
+
+      - name: Test diagrams and UI regressions
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          ./gradlew :ui:testDebugUnitTest \
+            --tests '*ImageCropStateTest' --tests '*FunctionPlotSpecTest' \
+            --tests '*ChemicalStructureSpecTest' --tests '*VisualDiagramSpecTest' --tests '*DiagramZoomStateTest' \
+            --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
+            '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
+
+      - name: Test provider regressions
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          ./gradlew :ai:testDebugUnitTest \
+            --tests '*QuotaQueryRunnerTest' --tests '*ChatCompletionsStreamDecoderNullTest' \
+            --tests '*ModelFilterTest' --tests '*GoogleThoughtSignaturePartTest' \
+            --tests '*InteractionsApiTest' --tests '*ChatCompletionsMistralContentTest' \
+            --tests '*ChatCompletionsRequestMessageTest' --tests '*StreamTraceReplayTest' \
+            --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
+            '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
+
+      - name: Build release variants
+        run: |
+          chmod +x gradlew
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            ./gradlew assembleGithubRelease assembleCoexistRelease assembleCoexistNormalRelease \
+              --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
+              '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
+          else
+            ./gradlew assembleGithubRelease
+          fi
+
+      - name: Extract app version
+        if: github.event_name == 'workflow_dispatch'
+        id: app_meta
+        run: |
+          VERSION_NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -n 1)
+          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          VERSION_CODE=$(grep -oP 'versionCode\s*=\s*\K[0-9]+' app/build.gradle.kts | head -n 1)
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify all release APKs
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          BUILD_TOOLS=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          python3 tools/verify_release_apks.py --root app/build/outputs/apk --build-tools "$BUILD_TOOLS" \
+            --version-code '${{ steps.app_meta.outputs.version_code }}' \
+            --version-name '${{ steps.app_meta.outputs.version_name }}' --commit "$GITHUB_SHA"
+
+      - name: Upload local release artifacts
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikkahub-local-release-${{ steps.app_meta.outputs.version_name }}-build${{ steps.app_meta.outputs.version_code }}
+          if-no-files-found: error
+          path: |
+            app/build/outputs/apk/github/release/*.apk
+            app/build/outputs/apk/coexist/release/*.apk
+            app/build/outputs/apk/coexistNormal/release/*.apk
+            app/build/outputs/apk/*-manifest.json
+            app/build/outputs/apk/SHA256SUMS-*.txt
+
+      - name: Archive release mappings
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikkahub-local-mapping-${{ steps.app_meta.outputs.version_name }}
+          if-no-files-found: error
+          path: app/build/outputs/mapping/*Release/mapping.txt
+
+      - name: Archive Room schemas
+        if: always() && github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikkahub-database-schemas-${{ github.sha }}
+          if-no-files-found: warn
+          path: app/schemas/**/*.json
+
+      - name: Archive test results
+        if: always() && github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rikkahub-test-results-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            app/build/test-results/testCoexistNormalDebugUnitTest/*.xml
+            ui/build/test-results/testDebugUnitTest/*.xml
+            ai/build/test-results/testDebugUnitTest/*.xml
 
       # 把 APK 直接发布为 Prerelease，用户点链接即可下载单个 apk，无需登录、无需解压
       - name: Publish nightly prerelease
         uses: softprops/action-gh-release@v2
-        if: success()
+        if: success() && github.event_name == 'schedule'
         with:
           tag_name: nightly            # 固定 tag，每晚覆盖同一个「最新每日构建」
           name: Nightly Build
