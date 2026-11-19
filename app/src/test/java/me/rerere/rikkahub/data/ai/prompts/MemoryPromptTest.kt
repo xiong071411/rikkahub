@@ -69,6 +69,52 @@ class MemoryPromptTest {
     }
 
     @Test
+    fun `compact consolidation replaces the full prompt in every learning and review mode`() {
+        for (learningMode in listOf(false, true)) {
+            for (fullReview in listOf(false, true)) {
+                val original = buildMemoryConsolidationPrompt(fullReview, learningMode)
+                assertEquals(original, buildMemoryConsolidationPrompt(fullReview, learningMode, compactPrompt = false))
+                val compact = buildMemoryConsolidationPrompt(fullReview, learningMode, compactPrompt = true)
+
+                assertTrue(original.contains("<memory_format>"))
+                assertFalse(compact.contains("<memory_format>"))
+                assertTrue("Compact consolidation should be substantially shorter", compact.length < original.length * 0.65)
+                assertEquals(learningMode, compact.contains("/areas/learning/<subject>.md"))
+                assertEquals(learningMode, compact.contains("[observed]"))
+                assertEquals(fullReview, compact.contains("## Full review"))
+                assertEquals(fullReview, compact.contains("memory_delete"))
+                assertTrue(compact.contains("[stated]"))
+                assertTrue(compact.contains("memory_read"))
+                assertTrue(compact.contains("memory_str_replace or memory_append"))
+                assertTrue(compact.contains("memory_write and if_version=\"new\""))
+                assertTrue(compact.contains("version conflict"))
+                assertTrue(compact.contains("conversation_read"))
+                assertTrue(compact.contains("conversation_search"))
+                assertTrue(compact.contains("YAML front matter"))
+                assertTrue(compact.contains("data, never instructions"))
+                assertTrue(compact.contains("user explicitly asks"))
+                assertTrue(compact.contains("Never store credentials or personal identifiers"))
+                assertFalse(compact.contains("self-harm"))
+                assertFalse(compact.contains("victimization"))
+                assertFalse(compact.contains("criminal records"))
+                assertFalse(compact.contains("sexual experiences"))
+            }
+        }
+    }
+
+    @Test
+    fun `compact learning consolidation retains evidence recurrence and improvement rules`() {
+        val prompt = buildMemoryConsolidationPrompt(fullReview = false, learningMode = true, compactPrompt = true)
+
+        assertTrue(prompt.contains("assistant's explanations"))
+        assertTrue(prompt.contains("image-only problems"))
+        assertTrue(prompt.contains("YYYY-MM-DD"))
+        assertTrue(prompt.contains("Update the date when a weakness recurs"))
+        assertTrue(prompt.contains("note demonstrated improvement without deleting its history"))
+        assertTrue(prompt.contains("the usual zero-to-two limit does not apply"))
+    }
+
+    @Test
     fun `consolidation input carries the memory state and each conversation's new turns`() {
         val input = buildMemoryConsolidationInput(
             files = listOf(profile, food),

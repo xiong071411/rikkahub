@@ -10,6 +10,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.ai.prompts.buildMemoryConsolidationPrompt
 import me.rerere.rikkahub.data.ai.prompts.buildMemoryPrompt
 import me.rerere.rikkahub.data.ai.tools.MemoryToolNames
+import me.rerere.rikkahub.data.model.Assistant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -269,5 +270,31 @@ class MemoryConsolidatorTest {
         val learningSystem = buildMemoryPrompt(emptyList(), learningMode = true)
         assertFalse(defaultSystem.contains("/areas/learning/"))
         assertTrue(learningSystem.contains("/areas/learning/"))
+    }
+
+    @Test
+    fun `shared memory uses compact consolidation only when a participating assistant enables it`() {
+        val original = Assistant(enableMemory = true)
+        val compact = Assistant(enableMemory = true, useCompactMemoryPrompt = true)
+        val assistants = listOf(original, compact)
+
+        assertFalse(useCompactMemoryConsolidationPrompt(assistants, setOf(original.id)))
+        assertTrue(useCompactMemoryConsolidationPrompt(assistants, setOf(compact.id)))
+        assertTrue(useCompactMemoryConsolidationPrompt(assistants, setOf(original.id, compact.id)))
+        assertFalse(
+            useCompactMemoryConsolidationPrompt(
+                listOf(compact.copy(useCompactMemoryPrompt = false)),
+                setOf(compact.id),
+            )
+        )
+    }
+
+    @Test
+    fun `full review without new turns honors compact mode for the whole memory store`() {
+        val original = Assistant(enableMemory = true)
+        val compact = Assistant(enableMemory = true, useCompactMemoryPrompt = true)
+
+        assertFalse(useCompactMemoryConsolidationPrompt(listOf(original), emptySet()))
+        assertTrue(useCompactMemoryConsolidationPrompt(listOf(original, compact), emptySet()))
     }
 }

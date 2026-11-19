@@ -185,7 +185,14 @@ class MemoryConsolidator(
         val tools = buildMemoryTools(memoryRepository, memoryId)
             .filter { fullReview || it.name != MemoryToolNames.DELETE } +
             createMemoryConversationTools(conversationRepo, assistantIds, learningMode = learningMode)
-        val systemPrompt = buildMemoryConsolidationPrompt(fullReview, learningMode = learningMode)
+        val systemPrompt = buildMemoryConsolidationPrompt(
+            fullReview = fullReview,
+            learningMode = learningMode,
+            compactPrompt = useCompactMemoryConsolidationPrompt(
+                assistants = assistants,
+                conversationAssistantIds = batches.map { it.conversation.assistantId }.toSet(),
+            ),
+        )
         // 整次整理的每一步用同一个会话 ID，服务端才能命中前面几步的缓存
         val params = backgroundTextGenerationParams(model, Uuid.random(), reasoningLevel)
         val hooks = object : AgentHooks {
@@ -301,6 +308,14 @@ private class Batch(
         )
     }
 }
+
+/** 共享记忆按本次参与整理的助手选提示词；没有新轮次的手动全库整理则检查整个记忆库。 */
+internal fun useCompactMemoryConsolidationPrompt(
+    assistants: List<Assistant>,
+    conversationAssistantIds: Set<Uuid>,
+): Boolean = assistants
+    .filter { conversationAssistantIds.isEmpty() || it.id in conversationAssistantIds }
+    .any { it.useCompactMemoryPrompt }
 
 // 超出的对话留在待整理里，这次整理完后会接着处理；至少带上一个，否则永远轮不到
 private fun List<Batch>.withinTranscriptBudget(maxLength: Int = MAX_TRANSCRIPT_LENGTH): List<Batch> {
