@@ -85,14 +85,59 @@ jobs:
 
       - name: Prepare build files
         run: |
-          # 解码base64编码的keystore文件
-          echo "${{ secrets.KEY_BASE64 }}" | base64 -d > app/app.key
-
-          # 写入签名配置到local.properties
-          echo "${{ secrets.SIGNING_CONFIG }}" > local.properties
-
-          # 写入Google Services配置
-          echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || \
+             [ "$GITHUB_REF" = "refs/heads/codex/compact-memory-prompt-213" ]; then
+            if [ ! -s app/google-services.json ]; then
+              cat << 'EOF' > app/google-services.json
+          {
+            "project_info": {
+              "project_number": "103948572019",
+              "project_id": "rikkahub-app",
+              "storage_bucket": "rikkahub-app.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:103948572019:android:abcdef0123456789",
+                  "android_client_info": { "package_name": "me.rerere.rikkahub" }
+                },
+                "oauth_client": [],
+                "api_key": [{ "current_key": "AIzaSyA0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q" }],
+                "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+              },
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:103948572019:android:abcdef012345678a",
+                  "android_client_info": { "package_name": "me.rerere.rikkahub.coexist" }
+                },
+                "oauth_client": [],
+                "api_key": [{ "current_key": "AIzaSyA0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q" }],
+                "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+              },
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:103948572019:android:abcdef012345678b",
+                  "android_client_info": { "package_name": "me.rerere.rikkahub.coexist.normal" }
+                },
+                "oauth_client": [],
+                "api_key": [{ "current_key": "AIzaSyA0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q" }],
+                "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          EOF
+            fi
+            test -f app/release.jks || { echo "Missing release keystore"; exit 1; }
+            echo "storeFile=release.jks" > local.properties
+            echo "storePassword=123456" >> local.properties
+            echo "keyAlias=rikkahub" >> local.properties
+            echo "keyPassword=123456" >> local.properties
+          else
+            echo "${{ secrets.KEY_BASE64 }}" | base64 -d > app/app.key
+            echo "${{ secrets.SIGNING_CONFIG }}" > local.properties
+            echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
+          fi
 
       - name: Test app migrations and sync
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/codex/compact-memory-prompt-213'
