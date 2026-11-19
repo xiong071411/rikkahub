@@ -8,6 +8,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
+import kotlin.math.abs
+import kotlin.math.hypot
 
 private const val MAX_SPEC_LENGTH = 16_384
 private const val MAX_ELEMENTS = 128
@@ -176,11 +178,30 @@ private fun parseElement(element: JsonElement, width: Float, height: Float): Vis
         "circle" -> {
             val center = obj.point("center", width, height)
             val radius = obj.number("radius") ?: error("Missing radius")
-            require(radius > 0f && center.x - radius >= 0f && center.x + radius <= width)
-            require(center.y - radius >= 0f && center.y + radius <= height)
-            VisualDiagramElement.Circle(
+            makeCircle(
                 center = center,
                 radius = radius,
+                width = width,
+                height = height,
+                color = color,
+                fillColor = obj.colorOrNull("fill"),
+                strokeWidth = strokeWidth,
+                dashed = dashed,
+            )
+        }
+
+        "incircle", "circumcircle" -> {
+            val vertices = obj["triangle"] as? JsonArray ?: error("Missing triangle")
+            require(vertices.size == 3)
+            val (center, radius) = triangleCircle(
+                type = obj.string("type") ?: error("Missing circle type"),
+                vertices = vertices.map { it.point(width, height) },
+            )
+            makeCircle(
+                center = center,
+                radius = radius,
+                width = width,
+                height = height,
                 color = color,
                 fillColor = obj.colorOrNull("fill"),
                 strokeWidth = strokeWidth,
@@ -210,6 +231,79 @@ private fun parseElement(element: JsonElement, width: Float, height: Float): Vis
 
         else -> error("Unknown diagram element")
     }
+}
+
+private fun makeCircle(
+    center: VisualDiagramPoint,
+    radius: Float,
+    width: Float,
+    height: Float,
+    color: VisualDiagramColor,
+    fillColor: VisualDiagramColor?,
+    strokeWidth: Float,
+    dashed: Boolean,
+): VisualDiagramElement.Circle {
+    require(radius.isFinite() && radius > 0f)
+    require(center.x - radius >= 0f && center.x + radius <= width)
+    require(center.y - radius >= 0f && center.y + radius <= height)
+    return VisualDiagramElement.Circle(
+        center = center,
+        radius = radius,
+        color = color,
+        fillColor = fillColor,
+        strokeWidth = strokeWidth,
+        dashed = dashed,
+    )
+}
+
+private fun triangleCircle(
+    type: String,
+    vertices: List<VisualDiagramPoint>,
+): Pair<VisualDiagramPoint, Float> {
+    val a = vertices[0]
+    val b = vertices[1]
+    val c = vertices[2]
+    val ax = a.x.toDouble()
+    val ay = a.y.toDouble()
+    val bx = b.x.toDouble()
+    val by = b.y.toDouble()
+    val cx = c.x.toDouble()
+    val cy = c.y.toDouble()
+    val twiceArea = abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax))
+    require(twiceArea > 0.0001)
+
+    val sideA = hypot(bx - cx, by - cy)
+    val sideB = hypot(cx - ax, cy - ay)
+    val sideC = hypot(ax - bx, ay - by)
+    val (centerX, centerY, radius) = when (type) {
+        "incircle" -> {
+            val perimeter = sideA + sideB + sideC
+            Triple(
+                (sideA * ax + sideB * bx + sideC * cx) / perimeter,
+                (sideA * ay + sideB * by + sideC * cy) / perimeter,
+                twiceArea / perimeter,
+            )
+        }
+
+        "circumcircle" -> {
+            val determinant = 2.0 * ((bx - ax) * (cy - ay) - (by - ay) * (cx - ax))
+            require(abs(determinant) > 0.0001)
+            val squareA = ax * ax + ay * ay
+            val squareB = bx * bx + by * by
+            val squareC = cx * cx + cy * cy
+            val centerX = (
+                squareA * (by - cy) + squareB * (cy - ay) + squareC * (ay - by)
+                ) / determinant
+            val centerY = (
+                squareA * (cx - bx) + squareB * (ax - cx) + squareC * (bx - ax)
+                ) / determinant
+            Triple(centerX, centerY, hypot(centerX - ax, centerY - ay))
+        }
+
+        else -> error("Unknown triangle circle type")
+    }
+    require(centerX.isFinite() && centerY.isFinite() && radius.isFinite())
+    return VisualDiagramPoint(centerX.toFloat(), centerY.toFloat()) to radius.toFloat()
 }
 
 private fun JsonObject.point(key: String, width: Float, height: Float): VisualDiagramPoint =

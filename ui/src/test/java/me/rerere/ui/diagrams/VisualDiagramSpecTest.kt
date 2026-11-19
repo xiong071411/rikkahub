@@ -43,6 +43,38 @@ class VisualDiagramSpecTest {
     }
 
     @Test
+    fun `parses explicit circles and computes triangle incircles and circumcircles`() {
+        val spec = VisualDiagramSpec.fromJson(
+            """{"version":1,"width":100,"height":100,"elements":[{"type":"circle","center":[50,50],"radius":20},{"type":"incircle","triangle":[[20,20],[80,20],[50,80]],"color":"blue"},{"type":"circumcircle","triangle":[[20,20],[80,20],[50,80]],"color":"red"}]}""",
+        )
+
+        assertNotNull(spec)
+        val circles = spec!!.elements.map { it as VisualDiagramElement.Circle }
+        assertEquals(50f, circles[0].center.x)
+        assertEquals(20f, circles[0].radius)
+        assertEquals(50f, circles[1].center.x, 0.01f)
+        assertEquals(38.6f, circles[1].center.y, 0.1f)
+        assertEquals(18.5f, circles[1].radius, 0.1f)
+        assertEquals(50f, circles[2].center.x, 0.01f)
+        assertEquals(42.5f, circles[2].center.y, 0.01f)
+        assertEquals(37.5f, circles[2].radius, 0.01f)
+    }
+
+    @Test
+    fun `drops degenerate and out of bounds constructed circles`() {
+        assertNull(
+            VisualDiagramSpec.fromJson(
+                """{"version":1,"width":100,"height":100,"elements":[{"type":"incircle","triangle":[[20,20],[50,50],[80,80]]}]}""",
+            )
+        )
+        assertNull(
+            VisualDiagramSpec.fromJson(
+                """{"version":1,"width":100,"height":100,"elements":[{"type":"circumcircle","triangle":[[10,10],[90,10],[50,20]]}]}""",
+            )
+        )
+    }
+
+    @Test
     fun `rejects executable shapes invalid coordinates and too many elements`() {
         assertNull(VisualDiagramSpec.fromJson("""{"version":1,"width":100,"height":70,"elements":[{"type":"script","code":"alert(1)"}]}"""))
         assertNull(VisualDiagramSpec.fromJson("""{"version":1,"width":100,"height":70,"elements":[{"type":"line","from":[-1,4],"to":[2,3]}]}"""))

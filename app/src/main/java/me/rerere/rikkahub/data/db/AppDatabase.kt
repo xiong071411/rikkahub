@@ -69,7 +69,7 @@ import me.rerere.rikkahub.utils.JsonInstant
         SyncMetaEntity::class,
         me.rerere.rikkahub.data.db.entity.SyncResourceEntity::class,
     ],
-    version = 34,
+    version = 35,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),

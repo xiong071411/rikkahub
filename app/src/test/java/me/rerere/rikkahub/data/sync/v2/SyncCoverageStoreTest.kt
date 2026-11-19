@@ -19,7 +19,9 @@ import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.db.entity.UsageRecordEntity
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
+import me.rerere.rikkahub.data.db.migrations.Migration_32_33
 import me.rerere.rikkahub.data.db.migrations.Migration_33_34
+import me.rerere.rikkahub.data.db.migrations.Migration_34_35
 import me.rerere.rikkahub.data.model.SshWorkspaceSettings
 import me.rerere.rikkahub.utils.JsonInstant
 import org.junit.After
@@ -57,6 +59,71 @@ class SyncCoverageStoreTest {
 
     @After fun close() {
         databases.forEach { it.close() }
+    }
+
+    @Test
+    fun `legacy version 32 migration creates sync tables index and preserves tombstones`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val schema = javaClass.classLoader!!.getResourceAsStream(
+            "me.rerere.rikkahub.data.db.AppDatabase/32.json"
+        )!!.bufferedReader().use {
+            JsonInstant.parseToJsonElement(it.readText()).jsonObject.getValue("database").jsonObject
+        }
+        val name = File(temporary.newFolder("legacy-v32"), "legacy.db").absolutePath
+        val helper = FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context).name(name)
+                .callback(object : SupportSQLiteOpenHelper.Callback(32) {
+                    override fun onCreate(db: SupportSQLiteDatabase) {
+                        schema.getValue("entities").jsonArray.forEach { element ->
+                            val entity = element.jsonObject
+                            val table = entity.getValue("tableName").jsonPrimitive.content
+                            db.execSQL(
+                                entity.getValue("createSql").jsonPrimitive.content.replace("\${TABLE_NAME}", table)
+                            )
+                            entity["indices"]?.jsonArray?.forEach { index ->
+                                db.execSQL(
+                                    index.jsonObject.getValue("createSql").jsonPrimitive.content
+                                        .replace("\${TABLE_NAME}", table)
+                                )
+                            }
+                        }
+                        schema.getValue("setupQueries").jsonArray.forEach { db.execSQL(it.jsonPrimitive.content) }
+                        db.execSQL(
+                            "CREATE TABLE IF NOT EXISTS sync_tombstone (" +
+                                "entity_type TEXT NOT NULL, id TEXT NOT NULL, deleted_at INTEGER NOT NULL)"
+                        )
+                        db.execSQL(
+                            "INSERT INTO sync_tombstone (entity_type, id, deleted_at) " +
+                                "VALUES ('conversation', 'deleted-conversation', 123)"
+                        )
+                    }
+
+                    override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+                }).build()
+        )
+        val db = helper.writableDatabase
+        Migration_32_33.migrate(db)
+
+        assertTrue(
+            db.query(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' " +
+                    "AND name = 'index_message_node_conversation_id_node_index'"
+            ).use { it.moveToFirst() }
+        )
+        assertFalse(
+            db.query(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' " +
+                    "AND name = 'index_message_node_conversation_id'"
+            ).use { it.moveToFirst() }
+        )
+        db.query("SELECT mutation_id, entity_type, entity_id, created_at FROM sync_outbox").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("legacy-tomb-conversation-deleted-conversation", cursor.getString(0))
+            assertEquals("conversation", cursor.getString(1))
+            assertEquals("deleted-conversation", cursor.getString(2))
+            assertEquals(123L, cursor.getLong(3))
+        }
+        helper.close()
     }
 
     @Test
@@ -267,7 +334,7 @@ class SyncCoverageStoreTest {
             helper.writableDatabase
             helper.close()
             val db = Room.databaseBuilder(context, AppDatabase::class.java, name)
-                .allowMainThreadQueries().addMigrations(Migration_33_34).build()
+                .allowMainThreadQueries().addMigrations(Migration_33_34, Migration_34_35).build()
             databases.add(db)
             val usage = db.syncCoverageDao().usage()
             val media = db.syncCoverageDao().generatedMedia()
@@ -279,6 +346,95 @@ class SyncCoverageStoreTest {
             return usage.map { it.syncId } + media.map { it.syncId }
         }
         assertEquals(migrate("old-phone", 1), migrate("restored-watch", 91))
+    }
+
+    @Test
+    fun `official version 34 gains sync tables and stable ids without losing records`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = File(temporary.newFolder("official-v34"), "legacy.db").absolutePath
+        val helper = FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context).name(name)
+                .callback(object : SupportSQLiteOpenHelper.Callback(34) {
+                    override fun onCreate(db: SupportSQLiteDatabase) {
+                        db.execSQL(
+                            "CREATE TABLE workspaces (" +
+                                "id TEXT NOT NULL PRIMARY KEY, storage_mounts TEXT NOT NULL DEFAULT '[]')"
+                        )
+                        db.execSQL("INSERT INTO workspaces (id, storage_mounts) VALUES ('workspace', '[]')")
+                        db.execSQL(
+                            "CREATE TABLE usage_record (" +
+                                "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                                "created_at INTEGER NOT NULL, source TEXT NOT NULL, provider_id TEXT, " +
+                                "model_id TEXT, model_name TEXT, assistant_id TEXT, conversation_id TEXT, " +
+                                "prompt_tokens INTEGER NOT NULL, completion_tokens INTEGER NOT NULL, cached_tokens INTEGER NOT NULL)"
+                        )
+                        db.execSQL("CREATE INDEX index_usage_record_created_at ON usage_record (created_at)")
+                        db.execSQL(
+                            "INSERT INTO usage_record (created_at, source, prompt_tokens, completion_tokens, cached_tokens) " +
+                                "VALUES (10, 'CHAT', 7, 2, 0)"
+                        )
+                        db.execSQL(
+                            "CREATE TABLE genmediaentity (" +
+                                "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, path TEXT NOT NULL, model_id TEXT NOT NULL, " +
+                                "prompt TEXT NOT NULL, create_at INTEGER NOT NULL, type TEXT NOT NULL, source_paths TEXT)"
+                        )
+                        db.execSQL(
+                            "INSERT INTO genmediaentity (path, model_id, prompt, create_at, type) " +
+                                "VALUES ('images/example.png', 'model', 'prompt', 10, 'image_generation')"
+                        )
+                        db.execSQL(
+                            "CREATE TABLE message_node (" +
+                                "id TEXT NOT NULL PRIMARY KEY, conversation_id TEXT NOT NULL, node_index INTEGER NOT NULL, " +
+                                "messages TEXT NOT NULL, select_index INTEGER NOT NULL)"
+                        )
+                        db.execSQL(
+                            "CREATE INDEX index_message_node_conversation_id_node_index " +
+                                "ON message_node (conversation_id, node_index)"
+                        )
+                    }
+
+                    override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+                }).build()
+        )
+        val db = helper.writableDatabase
+        Migration_34_35.migrate(db)
+
+        val usageId = db.query("SELECT sync_id FROM usage_record").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            cursor.getString(0)
+        }
+        val mediaId = db.query("SELECT sync_id FROM genmediaentity").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            cursor.getString(0)
+        }
+        assertTrue(usageId.isNotBlank())
+        assertTrue(mediaId.isNotBlank())
+        assertEquals(
+            "[]",
+            db.query("SELECT storage_mounts FROM workspaces WHERE id = 'workspace'").use {
+                assertTrue(it.moveToFirst())
+                it.getString(0)
+            },
+        )
+        assertTrue(
+            db.query("PRAGMA table_info(workspaces)").use { cursor ->
+                val nameIndex = cursor.getColumnIndexOrThrow("name")
+                buildSet { while (cursor.moveToNext()) add(cursor.getString(nameIndex)) }.contains("storage_mounts")
+            }
+        )
+        assertTrue(
+            db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sync_outbox'")
+                .use { it.moveToFirst() }
+        )
+        assertTrue(
+            db.query(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' " +
+                    "AND name = 'index_message_node_conversation_id_node_index'"
+            ).use { it.moveToFirst() }
+        )
+        assertEquals(1, db.query("SELECT COUNT(*) FROM usage_record").use { it.moveToFirst(); it.getInt(0) })
+        assertEquals(1, db.query("SELECT COUNT(*) FROM genmediaentity").use { it.moveToFirst(); it.getInt(0) })
+        helper.close()
     }
 
     @Test

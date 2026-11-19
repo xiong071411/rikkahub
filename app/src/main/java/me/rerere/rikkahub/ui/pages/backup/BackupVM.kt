@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.ui.pages.backup
 
+import android.net.Uri
 import android.util.Log
 import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
@@ -23,6 +24,8 @@ import me.rerere.rikkahub.data.sync.S3Sync
 import me.rerere.rikkahub.data.sync.engine.SyncV2InfoResponseDto
 import me.rerere.rikkahub.data.sync.importer.ChatboxImporter
 import me.rerere.rikkahub.data.sync.importer.CherryStudioProviderImporter
+import me.rerere.rikkahub.data.sync.importer.DeepSeekImportResult
+import me.rerere.rikkahub.data.sync.importer.DeepSeekMigrator
 import me.rerere.rikkahub.data.sync.webdav.WebDavBackupItem
 import me.rerere.rikkahub.data.sync.webdav.WebDavSync
 import me.rerere.rikkahub.utils.UiState
@@ -37,6 +40,7 @@ class BackupVM(
     private val conversationRepository: ConversationRepository,
     private val filesManager: FilesManager,
     private val incrementalSyncEngine: me.rerere.rikkahub.data.sync.engine.IncrementalSyncEngine,
+    private val deepSeekMigrator: DeepSeekMigrator,
 ) : ViewModel() {
     val settings = settingsStore.settingsFlow.stateIn(
         scope = viewModelScope,
@@ -229,6 +233,8 @@ class BackupVM(
             skippedSessions = result.skippedSessions,
         )
     }
+
+    suspend fun restoreFromDeepSeek(uri: Uri): DeepSeekImportResult = deepSeekMigrator.import(uri)
 
     fun restoreFromCherryStudio(file: File) {
         val importProviders = CherryStudioProviderImporter.importProviders(file)

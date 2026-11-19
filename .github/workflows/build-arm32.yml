@@ -167,7 +167,7 @@ jobs:
         run: |
           ./gradlew :ui:testDebugUnitTest \
             --tests '*ImageCropStateTest' --tests '*FunctionPlotSpecTest' \
-            --tests '*ChemicalStructureSpecTest' --tests '*VisualDiagramSpecTest' \
+            --tests '*ChemicalStructureSpecTest' --tests '*VisualDiagramSpecTest' --tests '*DiagramZoomStateTest' \
             --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
 
