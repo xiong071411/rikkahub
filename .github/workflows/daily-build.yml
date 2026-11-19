@@ -1,6 +1,9 @@
 name: Daily Build
 
 on:
+  push:
+    branches:
+      - codex/compact-memory-prompt-213
   # 每天 UTC 09:00、18:00 触发（北京时间 17:00、次日 02:00）
   schedule:
     - cron: '0 9,18 * * *'
@@ -18,8 +21,9 @@ jobs:
       - name: Check for recent commits
         id: check
         run: |
-          # 手动触发时无条件构建
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # 手动触发和本机发布分支推送时无条件构建
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || \
+             [ "${GITHUB_REF}" = "refs/heads/codex/compact-memory-prompt-213" ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -91,7 +95,7 @@ jobs:
           echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > app/google-services.json
 
       - name: Test app migrations and sync
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/codex/compact-memory-prompt-213'
         run: |
           chmod +x gradlew
           ./gradlew :app:testCoexistNormalDebugUnitTest \
@@ -102,7 +106,7 @@ jobs:
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
 
       - name: Test diagrams and UI regressions
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/codex/compact-memory-prompt-213'
         run: |
           ./gradlew :ui:testDebugUnitTest \
             --tests '*ImageCropStateTest' --tests '*FunctionPlotSpecTest' \
@@ -111,7 +115,7 @@ jobs:
             '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
 
       - name: Test provider regressions
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/codex/compact-memory-prompt-213'
         run: |
           ./gradlew :ai:testDebugUnitTest \
             --tests '*QuotaQueryRunnerTest' --tests '*ChatCompletionsStreamDecoderNullTest' \
@@ -124,7 +128,8 @@ jobs:
       - name: Build release variants
         run: |
           chmod +x gradlew
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || \
+             [ "$GITHUB_REF" = "refs/heads/codex/compact-memory-prompt-213" ]; then
             ./gradlew assembleGithubRelease assembleCoexistRelease assembleCoexistNormalRelease \
               --max-workers=2 --no-parallel -Pkotlin.compiler.execution.strategy=in-process \
               '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' --stacktrace
@@ -133,7 +138,7 @@ jobs:
           fi
 
       - name: Extract app version
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/codex/compact-memory-prompt-213'
         id: app_meta
         run: |
           VERSION_NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -n 1)
@@ -142,7 +147,7 @@ jobs:
           echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
 
       - name: Verify all release APKs
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/codex/compact-memory-prompt-213'
         run: |
           BUILD_TOOLS=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
           python3 tools/verify_release_apks.py --root app/build/outputs/apk --build-tools "$BUILD_TOOLS" \
@@ -150,7 +155,7 @@ jobs:
             --version-name '${{ steps.app_meta.outputs.version_name }}' --commit "$GITHUB_SHA"
 
       - name: Upload local release artifacts
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/codex/compact-memory-prompt-213'
         uses: actions/upload-artifact@v4
         with:
           name: rikkahub-local-release-${{ steps.app_meta.outputs.version_name }}-build${{ steps.app_meta.outputs.version_code }}
@@ -163,7 +168,7 @@ jobs:
             app/build/outputs/apk/SHA256SUMS-*.txt
 
       - name: Archive release mappings
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/codex/compact-memory-prompt-213'
         uses: actions/upload-artifact@v4
         with:
           name: rikkahub-local-mapping-${{ steps.app_meta.outputs.version_name }}
@@ -171,7 +176,7 @@ jobs:
           path: app/build/outputs/mapping/*Release/mapping.txt
 
       - name: Archive Room schemas
-        if: always() && github.event_name == 'workflow_dispatch'
+        if: always() && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/codex/compact-memory-prompt-213')
         uses: actions/upload-artifact@v4
         with:
           name: rikkahub-database-schemas-${{ github.sha }}
@@ -179,7 +184,7 @@ jobs:
           path: app/schemas/**/*.json
 
       - name: Archive test results
-        if: always() && github.event_name == 'workflow_dispatch'
+        if: always() && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/codex/compact-memory-prompt-213')
         uses: actions/upload-artifact@v4
         with:
           name: rikkahub-test-results-${{ github.sha }}
