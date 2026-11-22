@@ -19,13 +19,11 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.SyncServerConfig
 import me.rerere.rikkahub.data.db.AppDatabase
-import me.rerere.rikkahub.data.db.SQLiteConfiguration
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.MemoryConsolidationEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.db.entity.UsageRecordEntity
-import me.rerere.rikkahub.data.db.fts.createMessageFtsTables
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
@@ -80,9 +78,24 @@ class SyncLocalFastCacheTest {
         }
         val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
             .allowMainThreadQueries()
-            .openHelperFactory(SQLiteConfiguration.openHelperFactory(context))
             .build()
-        createMessageFtsTables(db.openHelper.writableDatabase)
+        db.openHelper.writableDatabase.apply {
+            execSQL(
+                """
+                CREATE TABLE message_fts(
+                    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    update_at TEXT NOT NULL DEFAULT ''
+                )
+                """.trimIndent()
+            )
+            execSQL("CREATE TABLE message_fts_rowid(fts_rowid INTEGER PRIMARY KEY, conversation_id TEXT NOT NULL)")
+            execSQL("CREATE INDEX index_message_fts_rowid_conversation_id ON message_fts_rowid(conversation_id)")
+        }
         SyncTombstoneManager.createTables(db.openHelper.writableDatabase)
         databases.add(db)
         return Triple(context, db, root)
