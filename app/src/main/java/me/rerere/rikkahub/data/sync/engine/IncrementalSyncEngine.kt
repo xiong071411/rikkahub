@@ -1428,8 +1428,16 @@ class IncrementalSyncEngine(
         isReconciled: Boolean,
     ): MissingConversationReplay {
         val localIds = conversationBridge.getAllConversationIds().toSet()
+        val dirtyConversationIds = fastCache.getDirtyEntries()
+            .asSequence()
+            .filter { it.entityType == "conversation" }
+            .mapTo(HashSet()) { it.entityId }
         val missingStates = syncV2Dao.getEntityStatesByType("conversation")
             .filter { !it.deleted && it.entityId !in localIds }
+            .filterNot { state ->
+                state.entityId in dirtyConversationIds ||
+                    syncV2Dao.getOutboxEntry("conversation", state.entityId)?.operation == "delete"
+            }
         if (missingStates.isEmpty()) return MissingConversationReplay(cursor, emptySet())
 
         val rewindCursor = if (isReconciled && cursor > 0L) {
