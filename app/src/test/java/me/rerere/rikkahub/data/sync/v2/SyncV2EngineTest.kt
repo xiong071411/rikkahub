@@ -731,6 +731,7 @@ class SyncV2EngineTest {
             .toString()
 
         assertEquals(1, summary.pulledConversations)
+        assertEquals("upsert", server.entities.getValue("conversation" to conversation.id.toString()).operation)
         assertEquals(expectedLocalTime, restored.messageNodes.single().messages.single().createdAt.toString())
         assertEquals(expectedLocalTime, restored.messageNodes.single().messages.single().finishedAt.toString())
         assertEquals(remote.revision.toString(), syncV2Dao.getMetaValue("cursor"))

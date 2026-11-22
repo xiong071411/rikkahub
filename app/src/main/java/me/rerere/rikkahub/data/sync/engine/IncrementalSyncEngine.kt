@@ -682,7 +682,10 @@ class IncrementalSyncEngine(
                         isReconciled = false
                     }
 
-                    cursor = rewindForMissingSyncedConversations(cursor, isReconciled)
+                    // These conversations must be replayed from the server, not queued as local deletions.
+                    val missingConversationReplay =
+                        rewindForMissingSyncedConversations(cursor, isReconciled)
+                    cursor = missingConversationReplay.cursor
 
                     reportProgress("正在检查工作区凭据...")
                     coverage?.refreshAvailability()
@@ -744,6 +747,7 @@ class IncrementalSyncEngine(
                             useFastDirtyPath = dirtyTrackerReady,
                             refreshWorkspaces = false,
                             sshWorkspaceIds = sshWorkspaceIds,
+                            replayingConversationIds = missingConversationReplay.entityIds,
                         )
                         referencedRemoteFiles.addAll(diffOutcome.referencedFiles)
                         if (diffOutcome.scannedFullSnapshot) {
@@ -1419,11 +1423,14 @@ class IncrementalSyncEngine(
     private fun isUnavailable(type: String, id: String): Boolean =
         coverage?.issues.orEmpty().any { it.entityType == type && it.entityId == id }
 
-    private suspend fun rewindForMissingSyncedConversations(cursor: Long, isReconciled: Boolean): Long {
+    private suspend fun rewindForMissingSyncedConversations(
+        cursor: Long,
+        isReconciled: Boolean,
+    ): MissingConversationReplay {
         val localIds = conversationBridge.getAllConversationIds().toSet()
         val missingStates = syncV2Dao.getEntityStatesByType("conversation")
             .filter { !it.deleted && it.entityId !in localIds }
-        if (missingStates.isEmpty()) return cursor
+        if (missingStates.isEmpty()) return MissingConversationReplay(cursor, emptySet())
 
         val rewindCursor = if (isReconciled && cursor > 0L) {
             minOf(cursor, (missingStates.minOf { it.lastSyncedRevision } - 1L).coerceAtLeast(0L))
@@ -1437,7 +1444,8 @@ class IncrementalSyncEngine(
             }
         }
         logWarn("Replaying sync changes for ${missingStates.size} locally missing conversation(s)")
-        return rewindCursor
+        val entityIds = missingStates.mapTo(LinkedHashSet()) { it.entityId }
+        return MissingConversationReplay(rewindCursor, entityIds)
     }
 
     private suspend fun stageUnavailableChange(change: SyncV2ChangeItemDto, hash: String, now: Long) {
@@ -1757,6 +1765,11 @@ class IncrementalSyncEngine(
         val scannedFullSnapshot: Boolean = false,
     )
 
+    private data class MissingConversationReplay(
+        val cursor: Long,
+        val entityIds: Set<String>,
+    )
+
     private suspend fun resolveSshWorkspaceIds(): Set<String> =
         coverage?.sshWorkspaceIds()
             ?: database?.workspaceDao()?.getAll()?.filter { it.isSsh() }?.mapTo(HashSet()) { it.id }
@@ -1869,6 +1882,7 @@ class IncrementalSyncEngine(
         useFastDirtyPath: Boolean = false,
         refreshWorkspaces: Boolean = true,
         sshWorkspaceIds: Set<String>? = null,
+        replayingConversationIds: Set<String> = emptySet(),
     ): LocalDiffOutcome {
         val currentSettings = settingsStore.awaitLoaded()
         val statesByKey = syncV2Dao.getAllEntityStates().associateBy { it.entityType to it.entityId }
@@ -1987,7 +2001,8 @@ class IncrementalSyncEngine(
                     val raw = loadSingleRoomEntityPayload(entityType, entityId, sshIds)
                     if (raw != null) {
                         snapshotToCheck[entityType to entityId] = raw
-                    } else if (entityType !in setOf("translation_history", "managed_file")) {
+                    } else if (entityType !in setOf("translation_history", "managed_file") &&
+                        !(entityType == "conversation" && entityId in replayingConversationIds)) {
                         val state = statesByKey[entityType to entityId]
                         if ((state != null && !state.deleted) ||
                             syncV2Dao.getOutboxEntry(entityType, entityId) != null) {
@@ -2018,6 +2033,7 @@ class IncrementalSyncEngine(
 
                 for ((key, state) in statesByKey) {
                     if (!state.deleted && key.first in checkedTypes && key !in allLiveKeys &&
+                        !(key.first == "conversation" && key.second in replayingConversationIds) &&
                         !isUnavailable(key.first, key.second)) {
                         syncMutationRecorder.recordDelete(key.first, key.second)
                     }
@@ -2073,6 +2089,7 @@ class IncrementalSyncEngine(
         // 2. 已在基线中存在但本地当前已删除的项（例如删除了某个自定义助手或提供商）
         for ((key, state) in statesByKey) {
             if (!state.deleted && key.first in checkedTypes && key !in snapshotMap &&
+                !(key.first == "conversation" && key.second in replayingConversationIds) &&
                 !isUnavailable(key.first, key.second)) {
                 syncMutationRecorder.recordDelete(key.first, key.second)
             }
