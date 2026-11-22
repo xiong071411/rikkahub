@@ -44,6 +44,7 @@ class SyncSettingsContractTest {
             ocrModelId = Uuid.random(), searchServiceSelected = 1,
             enableAutoCompress = true, autoCompressThreshold = 0.9f,
             selectedTTSProviderId = Uuid.random(), selectedASRProviderId = Uuid.random(),
+            enableTitleDatePrefix = true,
             titlePrompt = "", webServerAccessPassword = "source-private-password",
         )
         val target = Settings(syncServerConfig = SyncServerConfig(authToken = "target-only-token"), webServerAccessPassword = "target-private")

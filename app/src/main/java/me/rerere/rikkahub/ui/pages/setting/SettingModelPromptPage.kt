@@ -48,6 +48,7 @@ import me.rerere.rikkahub.ui.components.ai.ReasoningButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
 import me.rerere.rikkahub.ui.components.ui.CardGroupIcon
 import me.rerere.rikkahub.ui.components.ui.CardGroupScope
+import me.rerere.rikkahub.ui.components.ui.switchItem
 
 @Composable
 internal fun PromptSettingsPage(settings: Settings, vm: SettingVM, contentPadding: PaddingValues) {
@@ -88,8 +89,29 @@ internal fun PromptSettingsPage(settings: Settings, vm: SettingVM, contentPaddin
             val containerColor = MaterialTheme.colorScheme.secondaryContainer
             val contentColor = MaterialTheme.colorScheme.onSecondaryContainer
             CardGroup {
+                promptItem(
+                    slot = PromptSlot.TITLE,
+                    settings = settings,
+                    iconContainerColor = containerColor,
+                    iconContentColor = contentColor,
+                    onClick = { editing = it },
+                )
+                switchItem(
+                    checked = settings.enableTitleDatePrefix,
+                    onCheckedChange = {
+                        vm.updateSettings { latest -> latest.copy(enableTitleDatePrefix = it) }
+                    },
+                    headlineContent = { Text(stringResource(R.string.setting_model_page_title_date_prefix)) },
+                    supportingContent = { Text(stringResource(R.string.setting_model_page_title_date_prefix_desc)) },
+                )
+            }
+        }
+        item {
+            val containerColor = MaterialTheme.colorScheme.tertiaryContainer
+            val contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+            CardGroup {
                 PromptSlot.entries.fastForEach { slot ->
-                    if (slot != PromptSlot.TRANSLATION) {
+                    if (slot != PromptSlot.TRANSLATION && slot != PromptSlot.TITLE) {
                         promptItem(
                             slot = slot,
                             settings = settings,

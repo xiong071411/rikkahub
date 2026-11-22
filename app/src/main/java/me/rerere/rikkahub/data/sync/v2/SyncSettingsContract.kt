@@ -36,6 +36,7 @@ object SyncSettingsContract {
         "memoryModelId", "memoryModelReasoningLevel", "imageGenerationModelId", "translateModeId",
         "translateThinkingBudget", "ocrModelId", "searchCommonOptions", "searchServiceSelected",
         "selectedTTSProviderId", "selectedASRProviderId", "enableAutoCompress", "autoCompressThreshold",
+        "enableTitleDatePrefix",
     )
     val sharedFields =
         collectionFields.values.toSet() + legacyAiFields + preferenceFields + setOf("assistants", "providers")

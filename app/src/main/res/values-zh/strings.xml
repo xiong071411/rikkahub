@@ -1146,6 +1146,8 @@ mDNS 地址：使用 .local 主机名，同一网络中的其他设备可通过�
   <string name="setting_model_page_tab_prompt">提示词</string>
   <string name="setting_model_page_prompt_translation">翻译</string>
   <string name="setting_model_page_prompt_title">标题生成</string>
+  <string name="setting_model_page_title_date_prefix">附带当天日期</string>
+  <string name="setting_model_page_title_date_prefix_desc">自动在生成的标题开头加上该对话创建日期（例如 261122 标题）</string>
   <string name="setting_model_page_prompt_suggestion">聊天回复建议</string>
   <string name="setting_model_page_prompt_ocr">OCR识别</string>
   <string name="setting_display_page_bubble_opacity_title">气泡不透明度</string>

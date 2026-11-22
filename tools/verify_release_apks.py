@@ -74,6 +74,8 @@ def verify(root: Path, build_tools: Path, version_code: int, version_name: str, 
                 for marker in (b"visual-diagram", "全屏查看图像".encode("utf-8"), b"Font size is in sp"):
                     if not any(marker in data for data in dex):
                         raise ValueError(f"缺少教学图兼容或放大代码：{source}: {marker.decode('utf-8')}")
+                if not any(b"enable_title_date_prefix" in data for data in dex):
+                    raise ValueError(f"缺少标题附带日期配置代码：{source}")
                 dex_hashes[(flavor, abi)] = [hashlib.sha256(data).hexdigest() for data in dex]
             record = {
                 "source": source.as_posix(), "filename": filename, "flavor": flavor, "abi": abi,

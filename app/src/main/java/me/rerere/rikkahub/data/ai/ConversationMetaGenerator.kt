@@ -11,7 +11,29 @@ import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.utils.applyPlaceholders
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
+
+private val TITLE_DATE_PREFIX_FORMATTER: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("yyMMdd", Locale.ROOT)
+
+internal fun formatTitleWithDatePrefix(
+    title: String,
+    createAt: Instant,
+    zoneId: ZoneId = ZoneId.systemDefault(),
+): String {
+    val cleaned = title.trim()
+    val prefix = TITLE_DATE_PREFIX_FORMATTER.format(createAt.atZone(zoneId))
+    if (cleaned.isEmpty()) return prefix
+    // 避免模型输出或重复生成时叠出两层相同日期前缀
+    return if (cleaned == prefix || cleaned.startsWith("$prefix ")) {
+        cleaned
+    } else {
+        "$prefix $cleaned"
+    }
+}
 
 /** 用快速模型生成会话的标题和聊天建议，只负责请求模型，写回会话由调用方处理 */
 class ConversationMetaGenerator(
@@ -25,7 +47,7 @@ class ConversationMetaGenerator(
             ?: throw IllegalStateException(context.getString(R.string.error_fast_model_not_found))
         val provider = model.findProvider(settings.providers)
             ?: throw IllegalStateException(context.getString(R.string.error_fast_model_provider_not_found))
-        return generate(
+        val generated = generate(
             settings,
             model,
             provider,
@@ -35,6 +57,11 @@ class ConversationMetaGenerator(
             UsageSource.TITLE
         )
             .trim()
+        return if (settings.enableTitleDatePrefix) {
+            formatTitleWithDatePrefix(generated, conversation.createAt)
+        } else {
+            generated
+        }
     }
 
     /** 没有配置快速模型时返回 null */

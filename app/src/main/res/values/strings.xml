@@ -1167,6 +1167,8 @@
   <string name="setting_model_page_tab_prompt">Prompts</string>
   <string name="setting_model_page_prompt_translation">Translation</string>
   <string name="setting_model_page_prompt_title">Title Generation</string>
+  <string name="setting_model_page_title_date_prefix">Include Creation Date</string>
+  <string name="setting_model_page_title_date_prefix_desc">Automatically prepend the conversation creation date to generated titles (e.g. 261122 Title)</string>
   <string name="setting_model_page_prompt_suggestion">Chat Reply Suggestions</string>
   <string name="setting_model_page_prompt_ocr">OCR Recognition</string>
   <string name="setting_display_page_bubble_opacity_title">Bubble Opacity</string>

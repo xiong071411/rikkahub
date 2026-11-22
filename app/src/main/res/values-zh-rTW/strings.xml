@@ -1092,6 +1092,8 @@
   <string name="setting_model_page_tab_prompt">提示詞</string>
   <string name="setting_model_page_prompt_translation">翻譯</string>
   <string name="setting_model_page_prompt_title">標題生成</string>
+  <string name="setting_model_page_title_date_prefix">附帶當天日期</string>
+  <string name="setting_model_page_title_date_prefix_desc">自動在生成的標題開頭加上該對話建立日期（例如 261122 標題）</string>
   <string name="setting_model_page_prompt_suggestion">聊天回覆建議</string>
   <string name="setting_model_page_prompt_ocr">OCR 辨識</string>
   <string name="setting_display_page_bubble_opacity_title">氣泡透明度</string>
