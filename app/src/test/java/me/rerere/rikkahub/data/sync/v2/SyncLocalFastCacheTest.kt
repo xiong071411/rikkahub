@@ -19,6 +19,7 @@ import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.SyncServerConfig
 import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.db.SQLiteConfiguration
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.MemoryConsolidationEntity
@@ -79,6 +80,7 @@ class SyncLocalFastCacheTest {
         }
         val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
             .allowMainThreadQueries()
+            .openHelperFactory(SQLiteConfiguration.openHelperFactory(context))
             .build()
         createMessageFtsTables(db.openHelper.writableDatabase)
         SyncTombstoneManager.createTables(db.openHelper.writableDatabase)
