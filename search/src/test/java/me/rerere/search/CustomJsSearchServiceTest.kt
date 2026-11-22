@@ -58,6 +58,53 @@ class CustomJsSearchServiceTest {
     }
 
     @Test(timeout = 15_000)
+    fun `custom JS receives its API key without embedding it in the script`() = runBlocking {
+        val previousClient = SearchService.httpClient
+        SearchService.httpClient = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            assertEquals("Bearer test-api-key", request.header("Authorization"))
+            assertEquals("application/json", request.header("Content-Type"))
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                .code(200).message("OK")
+                .body(
+                    """{"choices":[{"message":{"content":"{\"answer\":\"摘要\",\"sources\":[{\"name\":\"NASA\",\"url\":\"https://www.nasa.gov\",\"snippet\":\"来源摘要\"}]}"}}]}""".toResponseBody()
+                )
+                .build()
+        }.build()
+        try {
+            val result = CustomJsSearchService.search(
+                buildJsonObject { put("query", "NASA Artemis II") },
+                SearchCommonOptions(resultSize = 3),
+                SearchServiceOptions.CustomJsOptions(
+                    apiKey = "test-api-key",
+                    timeoutSeconds = 120,
+                    searchScript = """
+                        function search(query, resultSize, apiKey) {
+                            const res = fetch('https://example.com/v1/search', {
+                                method: 'POST',
+                                headers: {'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json'},
+                                body: {query: query}
+                            });
+                            const payload = JSON.parse(res.json().choices[0].message.content);
+                            return {
+                                answer: payload.answer,
+                                items: payload.sources.slice(0, resultSize).map(function(source) {
+                                    return {title: source.name, url: source.url, text: source.snippet};
+                                })
+                            };
+                        }
+                    """.trimIndent(),
+                ),
+            ).getOrThrow()
+            assertEquals("摘要", result.answer)
+            assertEquals("NASA", result.items.single().title)
+            assertEquals("来源摘要", result.items.single().text)
+        } finally {
+            SearchService.httpClient = previousClient
+        }
+    }
+
+    @Test(timeout = 15_000)
     fun `scraping supports async functions and response text`() = runBlocking {
         val previousClient = SearchService.httpClient
         SearchService.httpClient = OkHttpClient.Builder().addInterceptor { chain ->

@@ -359,6 +359,8 @@ sealed class SearchServiceOptions {
     data class CustomJsOptions(
         override val id: Uuid = Uuid.random(),
         val name: String = "",
+        val apiKey: String = "",
+        val timeoutSeconds: Int = 30,
         val searchScript: String = DEFAULT_SEARCH_SCRIPT,
         val scrapeScript: String = "",
     ) : SearchServiceOptions() {

@@ -17,6 +17,7 @@ import me.rerere.ai.core.InputSchema
 import me.rerere.common.js.injectFetch
 import me.rerere.search.SearchService.Companion.httpClient
 import me.rerere.search.SearchService.Companion.json
+import java.util.concurrent.TimeUnit
 
 object CustomJsSearchService : SearchService<SearchServiceOptions.CustomJsOptions> {
     override val name: String = "Custom JS"
@@ -64,7 +65,8 @@ object CustomJsSearchService : SearchService<SearchServiceOptions.CustomJsOption
 
             val resultJson = executeScript(
                 userScript = script,
-                invocation = "search(${JsonPrimitive(query)}, ${commonOptions.resultSize})"
+                invocation = "search(${JsonPrimitive(query)}, ${commonOptions.resultSize}, ${JsonPrimitive(serviceOptions.apiKey)})",
+                timeoutSeconds = serviceOptions.timeoutSeconds,
             )
 
             json.decodeFromString<SearchResult>(resultJson)
@@ -82,27 +84,38 @@ object CustomJsSearchService : SearchService<SearchServiceOptions.CustomJsOption
 
             val resultJson = executeScript(
                 userScript = script,
-                invocation = "scrape($urlsJson)"
+                invocation = "scrape($urlsJson, ${JsonPrimitive(serviceOptions.apiKey)})",
+                timeoutSeconds = serviceOptions.timeoutSeconds,
             )
 
             json.decodeFromString<ScrapedResult>(resultJson)
         }.onFailure { if (it is CancellationException) throw it }
     }
 
-    private suspend fun executeScript(userScript: String, invocation: String): String =
-        withTimeoutOrNull(30_000) {
+    private suspend fun executeScript(
+        userScript: String,
+        invocation: String,
+        timeoutSeconds: Int,
+    ): String {
+        val timeoutMillis = timeoutSeconds.coerceIn(5, 120) * 1_000L
+        return withTimeoutOrNull(timeoutMillis) {
             quickJs(Dispatchers.IO) {
                 memoryLimit = 64L * 1024 * 1024
                 maxStackSize = 256L * 1024
-                evaluationTimeoutMillis = 30_000
+                evaluationTimeoutMillis = timeoutMillis
                 // The previous runtime supplied console even without a log listener.
                 evaluate<Unit>("globalThis.console = { log() {}, info() {}, warn() {}, error() {}, debug() {} }; void 0;")
-                injectFetch(httpClient)
+                val scriptHttpClient = httpClient.newBuilder()
+                    .callTimeout(timeoutMillis, TimeUnit.MILLISECONDS)
+                    .readTimeout(timeoutMillis, TimeUnit.MILLISECONDS)
+                    .build()
+                injectFetch(scriptHttpClient)
                 evaluate<Unit>(userScript + "\n;void 0;")
 
                 // Await async functions too, and serialize inside the interruptible engine.
                 evaluate<String?>("JSON.stringify(await $invocation)")
                     ?: error("Function returned null or undefined")
             }
-        } ?: error("JavaScript search execution timed out after 30s")
+        } ?: error("JavaScript search execution timed out after ${timeoutMillis / 1_000}s")
+    }
 }

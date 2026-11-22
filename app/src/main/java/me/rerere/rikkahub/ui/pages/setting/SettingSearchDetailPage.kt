@@ -27,6 +27,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
@@ -41,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
@@ -62,6 +64,7 @@ import me.rerere.search.SearchService
 import me.rerere.search.SearchServiceOptions
 import me.rerere.ui.components.FormItem
 import org.koin.androidx.compose.koinViewModel
+import kotlin.math.roundToInt
 import kotlin.uuid.Uuid
 
 @Composable
@@ -1005,6 +1008,44 @@ internal fun CustomJsOptions(
             },
             modifier = Modifier.fillMaxWidth(),
             placeholder = { Text(stringResource(R.string.search_detail_custom_search_placeholder)) }
+        )
+    }
+
+    FormItem(
+        label = {
+            Text(stringResource(R.string.search_detail_api_key))
+        }
+    ) {
+        OutlinedTextField(
+            value = options.apiKey,
+            onValueChange = {
+                onUpdateOptions(options.copy(apiKey = it))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            visualTransformation = PasswordVisualTransformation(),
+        )
+    }
+
+    FormItem(
+        label = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Script timeout")
+                Text("${options.timeoutSeconds}s")
+            }
+        }
+    ) {
+        Slider(
+            value = options.timeoutSeconds.coerceIn(5, 120).toFloat(),
+            onValueChange = {
+                onUpdateOptions(options.copy(timeoutSeconds = it.roundToInt()))
+            },
+            valueRange = 5f..120f,
+            steps = 22,
+            modifier = Modifier.fillMaxWidth(),
         )
     }
 
