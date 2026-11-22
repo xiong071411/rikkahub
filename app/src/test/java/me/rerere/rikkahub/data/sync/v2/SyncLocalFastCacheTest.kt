@@ -24,6 +24,7 @@ import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.db.entity.MemoryConsolidationEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.data.db.entity.UsageRecordEntity
+import me.rerere.rikkahub.data.db.fts.createMessageFtsTables
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
@@ -79,6 +80,7 @@ class SyncLocalFastCacheTest {
         val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
             .allowMainThreadQueries()
             .build()
+        createMessageFtsTables(db.openHelper.writableDatabase)
         SyncTombstoneManager.createTables(db.openHelper.writableDatabase)
         databases.add(db)
         return Triple(context, db, root)
