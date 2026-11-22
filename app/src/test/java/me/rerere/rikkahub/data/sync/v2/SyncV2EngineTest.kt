@@ -14,6 +14,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
@@ -77,6 +78,8 @@ import org.junit.rules.TemporaryFolder
 import org.junit.rules.Timeout
 import java.io.File
 import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.ZoneId
 import kotlin.uuid.Uuid
 
 /** 测试用固定助手 ID（Conversation.assistantId 为必填字段）。 */
@@ -697,6 +700,101 @@ class SyncV2EngineTest {
     }
 
     @Test
+    fun `missing synced conversation is replayed and web timestamps are localized`() = runBlocking {
+        val timestamp = "2026-11-22T08:36:10.475Z"
+        val conversation = sampleConversation("Web 会话", "Web 消息")
+        val payload = conversationPayloadWithMessageTimes(conversation, timestamp, timestamp)
+        server.currentRevision = 2949L
+        val remote = server.seedRemoteEntity("conversation", conversation.id.toString(), "upsert", payload)
+
+        syncV2Dao.upsertMeta(SyncMetaEntity("server_id", server.serverId))
+        syncV2Dao.upsertMeta(SyncMetaEntity("cursor", remote.revision.toString()))
+        syncV2Dao.upsertMeta(SyncMetaEntity("v2_reconciled", "1"))
+        syncV2Dao.upsertMeta(SyncMetaEntity("sync_coverage_version", SyncSettingsContract.COVERAGE_VERSION))
+        syncV2Dao.upsertMeta(SyncMetaEntity("conversation_sync_repair_version", "1"))
+        syncV2Dao.upsertEntityState(
+            SyncEntityStateEntity(
+                entityType = "conversation",
+                entityId = conversation.id.toString(),
+                lastSyncedRevision = remote.revision,
+                lastSyncedHash = remote.contentHash,
+                deleted = false,
+                updatedAt = 1,
+            )
+        )
+
+        val summary = engine.sync(defaultConfig).getOrThrow()
+        val restored = requireNotNull(conversationBridge.conversations[conversation.id])
+        val expectedLocalTime = OffsetDateTime.parse(timestamp)
+            .atZoneSameInstant(ZoneId.systemDefault())
+            .toLocalDateTime()
+            .toString()
+
+        assertEquals(1, summary.pulledConversations)
+        assertEquals(expectedLocalTime, restored.messageNodes.single().messages.single().createdAt.toString())
+        assertEquals(expectedLocalTime, restored.messageNodes.single().messages.single().finishedAt.toString())
+        assertEquals(remote.revision.toString(), syncV2Dao.getMetaValue("cursor"))
+    }
+
+    @Test
+    fun `repair baseline restores stale local conversation and preserves its old copy`() = runBlocking {
+        val timestamp = "2026-11-22T08:36:10.475Z"
+        val remoteConversation = sampleConversation("Web 最新会话", "Web 新消息")
+        val localConversation = remoteConversation.copy(
+            title = "客户端旧标题",
+            messageNodes = listOf(
+                MessageNode(messages = listOf(UIMessage.user("客户端旧消息")))
+            ),
+        )
+        server.currentRevision = 2949L
+        val remote = server.seedRemoteEntity(
+            "conversation",
+            remoteConversation.id.toString(),
+            "upsert",
+            conversationPayloadWithMessageTimes(remoteConversation, timestamp, timestamp),
+        )
+        conversationBridge.conversations[localConversation.id] = localConversation
+        syncV2Dao.upsertMeta(SyncMetaEntity("server_id", server.serverId))
+        syncV2Dao.upsertMeta(SyncMetaEntity("cursor", remote.revision.toString()))
+        syncV2Dao.upsertMeta(SyncMetaEntity("v2_reconciled", "1"))
+        syncV2Dao.upsertMeta(SyncMetaEntity("sync_coverage_version", SyncSettingsContract.COVERAGE_VERSION))
+        syncV2Dao.upsertEntityState(
+            SyncEntityStateEntity(
+                entityType = "conversation",
+                entityId = remoteConversation.id.toString(),
+                lastSyncedRevision = remote.revision,
+                lastSyncedHash = remote.contentHash,
+                deleted = false,
+                updatedAt = 1,
+            )
+        )
+
+        engine.sync(defaultConfig).getOrThrow()
+
+        val restored = requireNotNull(conversationBridge.conversations[remoteConversation.id])
+        val conflict = syncV2Dao.getUnresolvedConflicts().single()
+        val serverPayload = server.entities.getValue("conversation" to remoteConversation.id.toString()).payload
+        assertEquals("Web 最新会话", restored.title)
+        assertTrue(conflict.localPayload.contains("客户端旧消息"))
+        assertTrue(conflict.serverPayload.contains("Web 新消息"))
+        assertEquals("Web 最新会话", JsonInstant.decodeFromString<Conversation>(serverPayload).title)
+        assertEquals("1", syncV2Dao.getMetaValue("conversation_sync_repair_version"))
+    }
+
+    @Test
+    fun `invalid remote conversation payload fails without advancing the cursor`() = runBlocking {
+        val conversation = sampleConversation("坏时间会话", "内容")
+        val payload = conversationPayloadWithMessageTimes(conversation, "not-a-datetime", "not-a-datetime")
+        server.seedRemoteEntity("conversation", conversation.id.toString(), "upsert", payload)
+
+        val result = engine.sync(defaultConfig)
+
+        assertTrue(result.isFailure)
+        assertEquals("0", syncV2Dao.getMetaValue("cursor"))
+        assertEquals(null, syncV2Dao.getEntityState("conversation", conversation.id.toString()))
+    }
+
+    @Test
     fun `memory edited while push is in flight keeps its newer mutation`() = runBlocking {
         engine.sync(defaultConfig).getOrThrow()
         memoryRepository.writeFile("__global__", "/preferences.md", "已发出的版本")
@@ -784,6 +882,28 @@ class SyncV2EngineTest {
         createAt = Instant.ofEpochMilli(1700000000000L),
         updateAt = Instant.ofEpochMilli(1700000005000L),
     )
+
+    private fun conversationPayloadWithMessageTimes(
+        conversation: Conversation,
+        createdAt: String,
+        finishedAt: String,
+    ): String {
+        val root = JsonInstant.parseToJsonElement(JsonInstant.encodeToString(conversation)).jsonObject
+        val nodes = root.getValue("messageNodes").jsonArray.map { nodeElement ->
+            val node = nodeElement.jsonObject
+            val messages = node.getValue("messages").jsonArray.map { messageElement ->
+                val message = messageElement.jsonObject
+                JsonObject(
+                    message + mapOf(
+                        "createdAt" to JsonPrimitive(createdAt),
+                        "finishedAt" to JsonPrimitive(finishedAt),
+                    )
+                )
+            }
+            JsonObject(node + ("messages" to JsonArray(messages)))
+        }
+        return JsonInstant.encodeToString(JsonObject(root + ("messageNodes" to JsonArray(nodes))))
+    }
 
     private fun sampleMediaRecord(
         id: String,

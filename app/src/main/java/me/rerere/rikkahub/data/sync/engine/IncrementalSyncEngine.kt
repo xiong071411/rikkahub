@@ -23,8 +23,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.asr.ASRProviderSetting
@@ -90,6 +93,8 @@ import java.io.FileOutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.ZoneId
 import kotlin.uuid.Uuid
 
 private const val TAG = "IncrementalSyncEngine"
@@ -102,6 +107,8 @@ private const val META_V2_RECONCILED = "v2_reconciled"
 private const val META_COVERAGE = "sync_coverage_version"
 private const val META_DIRTY_TRACKER_SEEDED = "dirty_tracker_v1"
 private const val META_ATTACHMENT_BASELINE_SCANNED = "attachment_baseline_scanned"
+private const val META_CONVERSATION_REPAIR_VERSION = "conversation_sync_repair_version"
+private const val CONVERSATION_REPAIR_VERSION = "1"
 
 private const val PULL_PAGE_LIMIT = 200
 private const val PUSH_BATCH_LIMIT = 150
@@ -660,6 +667,22 @@ class IncrementalSyncEngine(
                             syncV2Dao.upsertEntityState(state.copy(lastSyncedHash = ""))
                         }
                     }
+
+                    if (syncV2Dao.getMetaValue(META_CONVERSATION_REPAIR_VERSION) != CONVERSATION_REPAIR_VERSION) {
+                        val conversationStates = syncV2Dao.getEntityStatesByType("conversation")
+                            .filterNot { it.deleted }
+                        runInTransaction {
+                            syncV2Dao.upsertEntityStates(
+                                conversationStates.map { it.copy(lastSyncedHash = "") }
+                            )
+                            syncV2Dao.upsertMeta(SyncMetaEntity(META_CURSOR, "0"))
+                            syncV2Dao.upsertMeta(SyncMetaEntity(META_V2_RECONCILED, "0"))
+                        }
+                        cursor = 0L
+                        isReconciled = false
+                    }
+
+                    cursor = rewindForMissingSyncedConversations(cursor, isReconciled)
 
                     reportProgress("正在检查工作区凭据...")
                     coverage?.refreshAvailability()
@@ -1263,6 +1286,7 @@ class IncrementalSyncEngine(
             syncV2Dao.upsertMeta(SyncMetaEntity(META_SERVER_ID, serverId))
             syncV2Dao.upsertMeta(SyncMetaEntity(META_CURSOR, cursor.toString()))
             syncV2Dao.upsertMeta(SyncMetaEntity(META_V2_RECONCILED, "1"))
+            syncV2Dao.upsertMeta(SyncMetaEntity(META_CONVERSATION_REPAIR_VERSION, CONVERSATION_REPAIR_VERSION))
         }
 
         return PullOutcome(
@@ -1394,6 +1418,27 @@ class IncrementalSyncEngine(
 
     private fun isUnavailable(type: String, id: String): Boolean =
         coverage?.issues.orEmpty().any { it.entityType == type && it.entityId == id }
+
+    private suspend fun rewindForMissingSyncedConversations(cursor: Long, isReconciled: Boolean): Long {
+        val localIds = conversationBridge.getAllConversationIds().toSet()
+        val missingStates = syncV2Dao.getEntityStatesByType("conversation")
+            .filter { !it.deleted && it.entityId !in localIds }
+        if (missingStates.isEmpty()) return cursor
+
+        val rewindCursor = if (isReconciled && cursor > 0L) {
+            minOf(cursor, (missingStates.minOf { it.lastSyncedRevision } - 1L).coerceAtLeast(0L))
+        } else {
+            cursor
+        }
+        runInTransaction {
+            syncV2Dao.upsertEntityStates(missingStates.map { it.copy(lastSyncedHash = "") })
+            if (rewindCursor < cursor) {
+                syncV2Dao.upsertMeta(SyncMetaEntity(META_CURSOR, rewindCursor.toString()))
+            }
+        }
+        logWarn("Replaying sync changes for ${missingStates.size} locally missing conversation(s)")
+        return rewindCursor
+    }
 
     private suspend fun stageUnavailableChange(change: SyncV2ChangeItemDto, hash: String, now: Long) {
         syncV2Dao.upsertInboxPending(SyncInboxPendingEntity(
@@ -2099,7 +2144,7 @@ class IncrementalSyncEngine(
         }
         when (entityType) {
             "conversation" -> {
-                val remoteConv = runCatching { json.decodeFromString<Conversation>(payloadJson) }.getOrNull() ?: return
+                val remoteConv = decodeRemoteConversation(payloadJson)
                 var localized = remoteConv.toLocalizedAttachmentPaths(localFilesDir)
                 if (coverage != null &&
                     database?.workspaceDao()?.getById(remoteConv.config?.workspaceId?.toString().orEmpty())?.isSsh() !=
@@ -2172,6 +2217,40 @@ class IncrementalSyncEngine(
             }
             else -> error("当前客户端不支持该同步实体：$entityType")
         }
+    }
+
+    private fun decodeRemoteConversation(payloadJson: String): Conversation {
+        val root = json.parseToJsonElement(payloadJson) as? JsonObject
+            ?: error("会话同步负载必须是 JSON 对象")
+        val nodes = root["messageNodes"] as? JsonArray ?: return json.decodeFromJsonElement(root)
+        val localizedNodes = JsonArray(nodes.map { nodeElement ->
+            val node = nodeElement as? JsonObject ?: return@map nodeElement
+            val messages = node["messages"] as? JsonArray ?: return@map nodeElement
+            val localizedMessages = JsonArray(messages.map { messageElement ->
+                val message = messageElement as? JsonObject ?: return@map messageElement
+                val localized = message.toMutableMap()
+                for (field in listOf("createdAt", "finishedAt")) {
+                    message[field]?.let { value ->
+                        localized[field] = localizedMessageDateTime(value)
+                    }
+                }
+                JsonObject(localized)
+            })
+            JsonObject(node + ("messages" to localizedMessages))
+        })
+        return json.decodeFromJsonElement(JsonObject(root + ("messageNodes" to localizedNodes)))
+    }
+
+    private fun localizedMessageDateTime(value: JsonElement): JsonElement {
+        val primitive = value as? JsonPrimitive ?: return value
+        if (!primitive.isString) return value
+        val localDateTime = runCatching {
+            OffsetDateTime.parse(primitive.content)
+                .atZoneSameInstant(ZoneId.systemDefault())
+                .toLocalDateTime()
+                .toString()
+        }.getOrNull() ?: return value
+        return JsonPrimitive(localDateTime)
     }
 
     private suspend fun applyRemoteDeleteLocally(entityType: String, entityId: String) {
