@@ -163,9 +163,9 @@ fun createConversationTools(
 )
 
 internal fun conversationSearchTool(
-    search: suspend (query: String, createdFrom: Instant?, createdBefore: Instant?) -> List<MessageSearchResult>,
     defaultLimit: Int = SEARCH_DEFAULT_LIMIT,
     maxLimit: Int = SEARCH_MAX_LIMIT,
+    search: suspend (query: String, createdFrom: Instant?, createdBefore: Instant?) -> List<MessageSearchResult>,
 ) = Tool(
     name = "conversation_search",
     description = """
