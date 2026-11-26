@@ -16,6 +16,7 @@ data class MessageSearchResult(
     val messageId: String,
     val conversationId: String,
     val title: String,
+    val createAt: Instant,
     val updateAt: Instant,
     val snippet: String,
 )
@@ -137,6 +138,9 @@ class MessageFtsManager(private val database: AppDatabase) {
         sort: MessageSearchSort = MessageSearchSort.RELEVANCE,
         // 只搜这些助手的对话，null 表示不限
         assistantIds: Collection<String>? = null,
+        excludeConversationId: String? = null,
+        createdFrom: Instant? = null,
+        createdBefore: Instant? = null,
     ): List<MessageSearchResult> = withContext(Dispatchers.IO) {
         val results = mutableListOf<MessageSearchResult>()
         if (assistantIds != null && assistantIds.isEmpty()) return@withContext results
@@ -146,20 +150,30 @@ class MessageFtsManager(private val database: AppDatabase) {
         } else {
             ""
         }
-        // 标题和更新时间以会话表为准，改标题、发消息都不用改写索引
+        val bindArgs = buildList<Any> {
+            add(matchQuery)
+            addAll(assistantIds.orEmpty())
+            excludeConversationId?.let { add(it) }
+            createdFrom?.let { add(it.toEpochMilli()) }
+            createdBefore?.let { add(it.toEpochMilli()) }
+        }
+        // 标题和时间以会话表为准，改标题、发消息都不用改写索引
         val cursor = db.query(
             """
             SELECT message_fts.node_id, message_fts.message_id, message_fts.conversation_id,
-                   conversation.title, conversation.update_at,
+                   conversation.title, conversation.create_at, conversation.update_at,
                    simple_snippet(message_fts, 0, '[', ']', '...', 30) AS snippet
             FROM message_fts
             JOIN conversationentity AS conversation ON conversation.id = message_fts.conversation_id
             WHERE message_fts.text MATCH ?
             $assistantFilter
+            ${if (excludeConversationId != null) "AND conversation.id != ?" else ""}
+            ${if (createdFrom != null) "AND conversation.create_at >= ?" else ""}
+            ${if (createdBefore != null) "AND conversation.create_at < ?" else ""}
             ORDER BY ${sort.orderBy}
             LIMIT 50
             """.trimIndent(),
-            arrayOf(matchQuery, *assistantIds.orEmpty().toTypedArray())
+            bindArgs.toTypedArray()
         )
         Log.i(TAG, "search: $keyword")
         cursor.use {
@@ -170,8 +184,9 @@ class MessageFtsManager(private val database: AppDatabase) {
                         messageId = it.getString(1),
                         conversationId = it.getString(2),
                         title = it.getString(3),
-                        updateAt = Instant.ofEpochMilli(it.getLong(4)),
-                        snippet = it.getString(5),
+                        createAt = Instant.ofEpochMilli(it.getLong(4)),
+                        updateAt = Instant.ofEpochMilli(it.getLong(5)),
+                        snippet = it.getString(6),
                     )
                 )
             }

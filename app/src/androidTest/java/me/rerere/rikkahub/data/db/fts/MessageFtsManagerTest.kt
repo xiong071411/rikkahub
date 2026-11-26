@@ -17,6 +17,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.nio.file.Files
+import java.time.Instant
 import kotlin.uuid.Uuid
 
 @RunWith(AndroidJUnit4::class)
@@ -88,6 +89,33 @@ class MessageFtsManagerTest {
 
         assertEquals(listOf(kept.id.toString()), fts.search("shared").map { it.conversationId })
         assertRowidTableMatches()
+    }
+
+    @Test
+    fun historySearchAppliesAssistantAndCreationDateFilters() = runBlocking {
+        val start = Instant.parse("2025-01-01T00:00:00Z")
+        val end = Instant.parse("2025-02-01T00:00:00Z")
+        val found = conversation("early chat", UIMessage.user("shared topic")).copy(
+            createAt = start, updateAt = end,
+        )
+        val current = conversation("current chat", UIMessage.user("shared topic")).copy(createAt = start)
+        val newer = conversation("newer chat", UIMessage.user("shared topic")).copy(createAt = end)
+        val other = conversation("other assistant", UIMessage.user("shared topic")).copy(
+            assistantId = Uuid.random(), createAt = start,
+        )
+        for (conversation in listOf(found, current, newer, other)) save(conversation, insert = true)
+
+        val hits = fts.search(
+            keyword = "shared",
+            assistantIds = listOf(assistantId.toString()),
+            excludeConversationId = current.id.toString(),
+            createdFrom = start,
+            createdBefore = end,
+        )
+
+        assertEquals(found.id.toString(), hits.single().conversationId)
+        assertEquals(start, hits.single().createAt)
+        assertEquals(4, fts.search("shared").size)
     }
 
     @Test

@@ -52,6 +52,7 @@ class ChatToolFactory(
         assistant: Assistant,
         model: Model,
         conversationId: Uuid,
+        historyAssistantId: Uuid,
         workspaceCwd: String? = null,
     ): List<Tool> {
         val workspaceTools =
@@ -65,7 +66,7 @@ class ChatToolFactory(
             }
             addAll(localTools.getTools(assistant.localTools))
             if (assistant.enableRecentChatsReference) {
-                addAll(createConversationTools(conversationRepository, assistant.id))
+                addAll(createConversationTools(conversationRepository, historyAssistantId, conversationId))
             }
             addAll(workspaceTools)
             if (assistant.enabledSkills.isNotEmpty()) {

@@ -15,6 +15,7 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.data.datastore.ConversationSortOrder
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.dao.ConversationDAO
+import me.rerere.rikkahub.data.db.dao.ConversationExcerpt
 import me.rerere.rikkahub.data.db.dao.FavoriteDAO
 import me.rerere.rikkahub.data.db.dao.MessageNodeDAO
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
@@ -51,14 +52,42 @@ class ConversationRepository(
     suspend fun hasFileReference(fileUrl: String): Boolean =
         messageNodeDAO.hasFileReference(JsonInstant.encodeToString(fileUrl))
 
-    suspend fun getRecentConversations(assistantId: Uuid, limit: Int = 10): List<Conversation> {
-        return conversationDAO.getRecentConversationsOfAssistant(
+    suspend fun getConversationHistory(
+        assistantId: Uuid,
+        currentId: Uuid,
+        oldestFirst: Boolean,
+        createdFrom: Instant?,
+        createdBefore: Instant?,
+        offset: Int,
+        limit: Int,
+    ): List<Conversation> =
+        conversationDAO.getConversationHistory(
             assistantId = assistantId.toString(),
-            limit = limit
-        ).map { entity ->
-            val nodes = loadMessageNodes(entity.id)
-            conversationEntityToConversation(entity, nodes)
-        }
+            currentId = currentId.toString(),
+            oldestFirst = oldestFirst,
+            createdFrom = createdFrom?.toEpochMilli(),
+            createdBefore = createdBefore?.toEpochMilli(),
+            offset = offset,
+            limit = limit,
+        ).map(::conversationSummaryToConversation)
+
+    /** 只读取请求范围内选中的消息分支，权限检查和读取共用同一份数据库快照。 */
+    suspend fun readConversationHistory(
+        assistantId: Uuid,
+        conversationId: Uuid,
+        offset: Int,
+        limit: Int,
+        textLength: Int,
+    ): ConversationHistoryPage? = database.withTransaction {
+        val id = conversationId.toString()
+        val title = conversationDAO.getHistoryConversationTitle(id, assistantId.toString())
+            ?: return@withTransaction null
+        val messages = messageNodeDAO.getConversationExcerpts(id, offset, limit + 1, textLength)
+        ConversationHistoryPage(
+            title = title,
+            messages = messages.take(limit),
+            hasMore = messages.size > limit,
+        )
     }
 
     fun getConversationsOfAssistant(assistantId: Uuid): Flow<List<Conversation>> {
@@ -418,11 +447,30 @@ class ConversationRepository(
         keyword: String,
         sort: MessageSearchSort = MessageSearchSort.RELEVANCE,
         assistantId: Uuid? = null,
-    ) = messageFtsManager.search(keyword, sort, assistantId?.let { listOf(it.toString()) })
+        excludeConversationId: Uuid? = null,
+        createdFrom: Instant? = null,
+        createdBefore: Instant? = null,
+    ) = messageFtsManager.search(
+        keyword = keyword,
+        sort = sort,
+        assistantIds = assistantId?.let { listOf(it.toString()) },
+        excludeConversationId = excludeConversationId?.toString(),
+        createdFrom = createdFrom,
+        createdBefore = createdBefore,
+    )
 
     /** 只在 [assistantIds] 这些助手的对话里搜索 */
-    suspend fun searchMessagesOfAssistants(keyword: String, assistantIds: Set<Uuid>) =
-        messageFtsManager.search(keyword, MessageSearchSort.RELEVANCE, assistantIds.map { it.toString() })
+    suspend fun searchMessagesOfAssistants(
+        keyword: String,
+        assistantIds: Set<Uuid>,
+        createdFrom: Instant? = null,
+        createdBefore: Instant? = null,
+    ) = messageFtsManager.search(
+        keyword = keyword,
+        assistantIds = assistantIds.map { it.toString() },
+        createdFrom = createdFrom,
+        createdBefore = createdBefore,
+    )
 
     suspend fun rebuildAllIndexes(onProgress: (current: Int, total: Int) -> Unit = { _, _ -> }) {
         messageFtsManager.deleteAll()
@@ -632,4 +680,10 @@ data class LightConversationEntity(
 data class ConversationPageResult(
     val items: List<Conversation>,
     val nextOffset: Int?,
+)
+
+data class ConversationHistoryPage(
+    val title: String,
+    val messages: List<ConversationExcerpt>,
+    val hasMore: Boolean,
 )

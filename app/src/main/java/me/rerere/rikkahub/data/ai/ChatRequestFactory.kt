@@ -28,6 +28,9 @@ import me.rerere.rikkahub.data.ai.prompts.FUNCTION_PLOT_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.VISUAL_DIAGRAM_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.buildMemoryPrompt
 import me.rerere.rikkahub.data.ai.tools.ChatToolFactory
+import me.rerere.rikkahub.data.ai.tools.ConversationHistoryBudget
+import me.rerere.rikkahub.data.ai.tools.conversationHistoryToolNames
+import me.rerere.rikkahub.data.ai.tools.withBoundedConversationHistory
 import me.rerere.rikkahub.data.ai.transformers.Base64ImageToLocalFileTransformer
 import me.rerere.rikkahub.data.ai.transformers.DocumentAsPromptTransformer
 import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
@@ -75,7 +78,9 @@ class ChatTurnContext(
     val workspaceCwd: String?,
     val memories: List<MemoryFile>,
     val tools: List<Tool>,
-)
+) {
+    internal val hasHistoryTools = tools.any { it.name in conversationHistoryToolNames }
+}
 
 /** 把会话变成发给模型的请求：系统提示词、上下文裁剪、输入输出转换都在这里 */
 class ChatRequestFactory(
@@ -124,6 +129,7 @@ class ChatRequestFactory(
                 assistant = assistant,
                 model = model,
                 conversationId = conversation.id,
+                historyAssistantId = conversation.assistantId,
                 workspaceCwd = conversation.workspaceCwd,
             ),
         )
@@ -141,6 +147,11 @@ class ChatRequestFactory(
         takePendingParts: suspend () -> List<UIMessagePart> = { emptyList() },
         pauseAfterTools: (UIMessage) -> Boolean = { false },
     ): Pair<AgentRequest, AgentHooks> {
+        val historyBudget = if (turn.hasHistoryTools) {
+            ConversationHistoryBudget(messages, turn.model.contextLength)
+        } else {
+            null
+        }
         val request = AgentRequest(
             provider = usageRecorder.wrap(
                 providerManager.getProviderByType(turn.providerSetting),
@@ -148,14 +159,19 @@ class ChatRequestFactory(
             ),
             providerSetting = turn.providerSetting,
             messages = messages,
-            tools = turn.tools,
+            tools = historyBudget?.let { budget -> turn.tools.map(budget::wrap) } ?: turn.tools,
             stream = turn.assistant.streamOutput,
             retry = turn.settings.retryPolicy(),
         )
         val hooks = object : AgentHooks {
             override suspend fun prepareStep(messages: List<UIMessage>): StepRequest {
                 Log.i(TAG, "prepareStep: ${turn.model.id}")
-                return buildStep(turn, messages, processingStatus)
+                return buildStep(
+                    turn,
+                    messages,
+                    processingStatus,
+                    historyLimitReached = historyBudget?.exhausted == true,
+                )
             }
 
             override suspend fun previewStep(message: UIMessage, newPartsFrom: Int) =
@@ -182,7 +198,7 @@ class ChatRequestFactory(
      *
      * 请求按正常对话组装（系统提示词、工具定义、参数和 sessionId 都相同），只在末尾追加压缩指令，
      * 前缀与上一轮对话一致，可以命中提示词缓存，模型也能看到工具调用和结果。
-     * 工具定义必须保留：它属于请求前缀，去掉或改动 tool_choice 都会让缓存失效。
+     * 工具定义也是缓存前缀的一部分，沿用对话请求使用的历史检索限额。
      */
     suspend fun generateCompressionSummary(
         turn: ChatTurnContext,
@@ -205,7 +221,9 @@ class ChatRequestFactory(
         messages: List<UIMessage>,
         compressPrompt: String,
     ): String {
-        val (requestMessages, params) = buildStep(turn, messages)
+        val historyLimitReached = turn.hasHistoryTools &&
+            ConversationHistoryBudget(messages, turn.model.contextLength).exhausted
+        val (requestMessages, params) = buildStep(turn, messages, historyLimitReached = historyLimitReached)
         // 压缩指令不经过输入转换器，模板转换器会把其中的花括号当成模板语法
         val result = withRetry(
             policy = turn.settings.retryPolicy(),
@@ -231,8 +249,10 @@ class ChatRequestFactory(
         turn: ChatTurnContext,
         messages: List<UIMessage>,
         processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
+        historyLimitReached: Boolean = false,
     ): StepRequest {
         val assistant = turn.assistant
+        val hiddenTools = if (historyLimitReached) conversationHistoryToolNames else emptySet()
         val requestMessages = buildList {
             val system = buildString {
                 val effectiveSystemPrompt =
@@ -287,13 +307,17 @@ class ChatRequestFactory(
             settings = turn.settings,
             processingStatus = processingStatus,
             workspaceCwd = turn.workspaceCwd,
+        ).withBoundedConversationHistory(
+            contextLength = turn.model.contextLength,
+            hideHistoryTools = !turn.hasHistoryTools || historyLimitReached,
+            historyLimitReached = historyLimitReached,
         ).expandNotices()
         val params = TextGenerationParams(
             model = turn.model,
             temperature = assistant.temperature,
             topP = assistant.topP,
             maxTokens = assistant.maxTokens,
-            tools = turn.tools,
+            tools = turn.tools.filterNot { it.name in hiddenTools },
             reasoningLevel = assistant.reasoningLevel,
             customHeaders = buildList {
                 addAll(assistant.customHeaders)
@@ -305,7 +329,7 @@ class ChatRequestFactory(
             },
             sessionId = turn.conversationId.toString(),
         )
-        return StepRequest(requestMessages, params)
+        return StepRequest(requestMessages, params, hiddenToolNames = hiddenTools)
     }
 }
 

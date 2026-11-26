@@ -400,7 +400,10 @@ object RecentChatsToolUI : ToolUIRenderer {
 
     @Composable
     override fun title(context: ToolUIContext): String =
-        stringResource(R.string.chat_message_tool_recent_chats)
+        stringResource(
+            if (context.arguments.getStringContent("order") == "oldest") R.string.history_page_title
+            else R.string.chat_message_tool_recent_chats
+        )
 
     private fun chats(context: ToolUIContext): List<JsonElement> =
         (context.content as? JsonArray) ?: emptyList()

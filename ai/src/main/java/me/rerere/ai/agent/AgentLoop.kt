@@ -89,7 +89,9 @@ internal class AgentLoop(
         appendPendingParts()
         val current = message
         val step = hooks.prepareStep(if (current == null) history else history + current)
-        val params = step.params.copy(tools = request.tools)
+        val availableTools = if (step.hiddenToolNames.isEmpty()) request.tools
+        else request.tools.filterNot { it.name in step.hiddenToolNames }
+        val params = step.params.copy(tools = availableTools)
         // 只带着追加内容创建的消息还没有模型 id
         val base = current?.let { it.copy(modelId = it.modelId ?: params.model.id) } ?: UIMessage(
             role = MessageRole.ASSISTANT,

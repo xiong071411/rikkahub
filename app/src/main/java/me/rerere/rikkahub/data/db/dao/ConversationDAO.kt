@@ -46,9 +46,31 @@ interface ConversationDAO {
     ): PagingSource<Int, LightConversationEntity>
 
     @Query(
-        "SELECT * FROM conversationentity WHERE assistant_id = :assistantId ORDER BY is_pinned DESC, update_at DESC LIMIT :limit"
+        """
+        SELECT id, assistant_id AS assistantId, title, is_pinned AS isPinned, create_at AS createAt,
+               update_at AS updateAt, folder_id AS folderId
+        FROM conversationentity
+        WHERE assistant_id = :assistantId AND id != :currentId
+          AND (:createdFrom IS NULL OR create_at >= :createdFrom)
+          AND (:createdBefore IS NULL OR create_at < :createdBefore)
+        ORDER BY CASE WHEN :oldestFirst THEN create_at END ASC,
+                 CASE WHEN NOT :oldestFirst THEN is_pinned END DESC,
+                 CASE WHEN NOT :oldestFirst THEN update_at END DESC, id
+        LIMIT :limit OFFSET :offset
+        """
     )
-    suspend fun getRecentConversationsOfAssistant(assistantId: String, limit: Int): List<ConversationEntity>
+    suspend fun getConversationHistory(
+        assistantId: String,
+        currentId: String,
+        oldestFirst: Boolean,
+        createdFrom: Long?,
+        createdBefore: Long?,
+        offset: Int,
+        limit: Int,
+    ): List<LightConversationEntity>
+
+    @Query("SELECT title FROM conversationentity WHERE id = :id AND assistant_id = :assistantId")
+    suspend fun getHistoryConversationTitle(id: String, assistantId: String): String?
 
     @Query(
         "SELECT * FROM conversationentity WHERE title LIKE '%' || :searchText || '%' ORDER BY is_pinned DESC, update_at DESC"

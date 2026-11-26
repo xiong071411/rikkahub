@@ -32,7 +32,7 @@ interface AgentHooks {
      * 每次请求模型之前调用，返回这一步实际发出的消息和参数，系统提示词、上下文裁剪、输入转换都在这里做。
      *
      * [messages] 是历史加上本轮的助手消息；第一步还没有内容时不包含它。
-     * 返回的 [StepRequest.params] 里的 tools 会被换成 [AgentRequest.tools]，声明给模型的工具和能执行的工具始终是同一份。
+     * 返回的 [StepRequest.params] 里的 tools 会被换成 [AgentRequest.tools] 中这一步仍可调用的工具。
      */
     suspend fun prepareStep(messages: List<UIMessage>): StepRequest
 
@@ -68,6 +68,8 @@ interface AgentHooks {
 data class StepRequest(
     val messages: List<UIMessage>,
     val params: TextGenerationParams,
+    /** Exclude these tools from this model request. Pending calls still use the registered definitions. */
+    val hiddenToolNames: Set<String> = emptySet(),
 )
 
 sealed interface AgentEvent {

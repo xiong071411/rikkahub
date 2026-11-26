@@ -120,6 +120,39 @@ class AgentLoopTest {
     }
 
     @Test
+    fun `a step can hide an exhausted tool while leaving other tools available`() = runTest {
+        val boundedSearchHooks = object : AgentHooks by hooks {
+            override suspend fun prepareStep(messages: List<UIMessage>): StepRequest {
+                val step = hooks.prepareStep(messages)
+                val searched = messages.last().getTools().any { it.toolName == "search" && it.isExecuted }
+                return if (searched) step.copy(hiddenToolNames = setOf("search")) else step
+            }
+        }
+        provider.stream {
+            toolCall("search-1", "search")
+            finish()
+        }
+        provider.stream {
+            toolCall("read-1", "read")
+            finish()
+        }
+        provider.stream {
+            text("answer")
+            finish()
+        }
+
+        val tools = listOf(tool("search") { ok() }, tool("read") { ok() })
+        val finished = runToEnd(request(tools = tools), boundedSearchHooks).finished()
+
+        assertEquals(AgentFinishReason.Completed, finished.reason)
+        assertEquals(
+            listOf(listOf("search", "read"), listOf("read"), listOf("read")),
+            provider.requests.map { request -> request.params.tools.map { it.name } },
+        )
+        assertTrue(finished.message.tool("read-1").isExecuted)
+    }
+
+    @Test
     fun `a tool needing approval holds back the whole batch`() = runTest {
         val executed = mutableListOf<String>()
         val tools = listOf(
