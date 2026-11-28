@@ -81,6 +81,8 @@ def verify(root: Path, build_tools: Path, version_code: int, version_name: str, 
                         raise ValueError(f"缺少聊天记录检索改进：{source}: {marker.decode()}")
                 if not any(b"Conversation history limit reached" in data for data in dex):
                     raise ValueError(f"缺少聊天记录检索限额：{source}")
+                if not any("支持双指捏合 / 双击局部放大".encode("utf-8") in data for data in dex):
+                    raise ValueError(f"缺少全屏局部放大交互代码：{source}")
                 dex_hashes[(flavor, abi)] = [hashlib.sha256(data).hexdigest() for data in dex]
             record = {
                 "source": source.as_posix(), "filename": filename, "flavor": flavor, "abi": abi,

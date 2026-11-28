@@ -7,17 +7,39 @@ import org.junit.Test
 
 class DiagramZoomStateTest {
     @Test
-    fun `pinch keeps the gesture centroid anchored and clamps scale`() {
+    fun `pinch at viewport center keeps offset centered and clamps scale`() {
         val viewport = Size(200f, 160f)
         val zoomed = DiagramZoomState().transform(
             centroid = Offset(100f, 80f),
             pan = Offset.Zero,
-            zoomChange = 9f,
+            zoomChange = 10f,
             viewport = viewport,
         )
 
-        assertEquals(6f, zoomed.scale)
-        assertEquals(Offset(-500f, -400f), zoomed.offset)
+        assertEquals(8f, zoomed.scale)
+        assertEquals(Offset.Zero, zoomed.offset)
+    }
+
+    @Test
+    fun `pinch off center keeps touched point anchored relative to viewport center`() {
+        val viewport = Size(200f, 160f)
+        val zoomed = DiagramZoomState().transform(
+            centroid = Offset(160f, 80f),
+            pan = Offset.Zero,
+            zoomChange = 2.5f,
+            viewport = viewport,
+        )
+
+        assertEquals(2.5f, zoomed.scale)
+        assertEquals(Offset(-90f, 0f), zoomed.offset)
+    }
+
+    @Test
+    fun `zoomBy scales around viewport center and resets below 1x`() {
+        val viewport = Size(200f, 160f)
+        val zoomed = DiagramZoomState().zoomBy(2f, viewport)
+        assertEquals(2f, zoomed.scale)
+        assertEquals(DiagramZoomState(), zoomed.zoomBy(0.25f, viewport))
     }
 
     @Test
